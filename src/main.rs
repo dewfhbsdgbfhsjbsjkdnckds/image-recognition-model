@@ -6,18 +6,7 @@
 #![feature(unboxed_closures)]
 
 use std::{
-    any::TypeId,
-    array::{self, TryFromSliceError},
-    borrow::Borrow,
-    convert::identity,
-    error::Error,
-    fmt::{Debug, Display},
-    fs::File,
-    io::{Cursor, Read},
-    mem::{self, MaybeUninit, swap},
-    ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
-    ptr::NonNull,
-    slice, time,
+    any::TypeId, array::{self, TryFromSliceError}, borrow::Borrow, convert::identity, error::Error, fmt::{Debug, Display}, fs::File, io::{Cursor, Read}, mem::{self, ManuallyDrop, MaybeUninit, swap}, ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}, ptr::NonNull, slice, time,
 };
 
 // might be useful? idk lol
@@ -622,12 +611,9 @@ where
     type Output = Matrix<MulOut<T, U>>;
     fn mul(self, rhs: Matrix<U>) -> Self::Output {
         let m = self.height();
-        //println!("m = {}", m);
         let n = rhs.height();
-        //println!("n = {}", n);
         let p = rhs.width();
-        //println!("p = {}", p);
-        let x = matrix_mul(&self.data, rhs.data, m, n, p);
+        let x = matrix_mul(&self.data[..], rhs.data, m, n, p);
         Matrix { data: x, height: m }
     }
 }
@@ -638,7 +624,8 @@ where
     type Output = Matrix<<T as Add<U>>::Output>;
     fn add(self, rhs: Matrix<U>) -> Self::Output {
         let height = self.height();
-        let x = matrix_map_a_b(self.data, rhs.data, |x, y| x + y);
+        let width = self.width();
+        let x = matrix_map_a_b(self.data, rhs.data, height, width, |x, y| x + y);
         Matrix { data: x, height }
     }
 }
@@ -723,7 +710,7 @@ where
         let m = self.height();
         let n = rhs.height();
         let p = rhs.width();
-        let x = matrix_mul(&self.data, &rhs.data, m, n, p);
+        let x = matrix_mul(&self.data[..], &rhs.data[..], m, n, p);
         Matrix { data: x, height: m }
     }
 }
@@ -826,8 +813,9 @@ impl<T> Matrix<T> {
     {
         assert_eq!(self.shape(), rhs.shape());
         let height = self.height();
+        let width = self.width();
         Matrix {
-            data: matrix_map_a_b_override_a(self.data, rhs.data, Add::add),
+            data: matrix_map_a_b_override_a(self.data, rhs.data, height, width, Add::add),
             height,
         }
     }
@@ -837,8 +825,9 @@ impl<T> Matrix<T> {
     {
         assert_eq!(self.shape(), rhs.shape());
         let height = self.height();
+        let width = self.width();
         Matrix {
-            data: matrix_map_a_b_override_a(self.data, rhs.data, Sub::sub),
+            data: matrix_map_a_b_override_a(self.data, rhs.data, height, width, Sub::sub),
             height,
         }
     }
@@ -870,9 +859,8 @@ impl<T> Matrix<T> {
             height: m,
         }
     }
-    pub fn map_ref<F>(&mut self, f: F) -> &mut Self
+    pub fn map_ref(&mut self, f: impl Fn(T) -> T) -> &mut Self
     where
-        F: Fn(T) -> T,
         T: Clone,
     {
         for i in 0..self.data.len() {
@@ -880,9 +868,7 @@ impl<T> Matrix<T> {
         }
         self
     }
-    pub fn map_self<F>(mut self, f: F) -> Self
-    where
-        F: Fn(T) -> T,
+    pub fn map_self(mut self, f: impl Fn(T) -> T) -> Self
     {
         let self_ptr = self.data.as_ptr();
         for i in 0..self.data.len() {
@@ -891,9 +877,7 @@ impl<T> Matrix<T> {
         }
         self
     }
-    pub fn map<F, U>(mut self, f: F) -> Matrix<U>
-    where
-        F: Fn(T) -> U,
+    pub fn map<U>(mut self, f: impl Fn(T) -> U) -> Matrix<U>
     {
         let mut out = Vec::with_capacity(self.data.len());
         let height = self.height();
@@ -933,8 +917,9 @@ impl<T> Matrix<T> {
             "both vectors must have the same size for hadamard"
         );
         let height = self.height();
+        let width = self.width();
         Matrix {
-            data: matrix_map_a_b_override_a(self.data, rhs.data, |x, y| x * y),
+            data: matrix_map_a_b_override_a(self.data, rhs.data, height, width, |x, y| x * y),
             height,
         }
     }
@@ -948,16 +933,58 @@ impl<T> Matrix<T> {
             "both vectors must have the same size for hadamard"
         );
         let height = self.height();
+        let width = self.width();
         Matrix {
-            data: matrix_map_a_b(self.data, rhs.data, |x, y| x * y),
+            data: matrix_map_a_b(self.data, rhs.data, height, width, |x, y| x * y),
             height,
         }
     }
 }
 
+//fn matrix_mul<T, U>(
+//    lhs: impl AsRef<[T]>,
+//    rhs: impl AsRef<[U]>,
+//    m: usize,
+//    n: usize,
+//    p: usize,
+//) -> Box<[MulOut<T, U>]>
+//where
+//    T: Mul<U>,
+//    T: Clone,
+//    U: Clone,
+//    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output>,
+//{
+//    // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
+//    // n is the width of A
+//    // (m * n) mul (n * p) = (m * p) matrix
+//    let lhs = lhs.as_ref();
+//    let rhs = rhs.as_ref();
+//    assert_eq!(
+//        m * n,
+//        lhs.len(),
+//        "lhs matrix must have a size (total length) of m * n"
+//    );
+//    assert_eq!(
+//        n * p,
+//        rhs.len(),
+//        "rhs matrix must have a size (total length) of n * p"
+//    );
+//    let mut out = Vec::with_capacity(m * p);
+//    for i in 0..m {
+//        for j in 0..p {
+//            let mut sum = lhs[i * n + 0].clone() * rhs[0 * n + j].clone();
+//            for k in 1..n {
+//                /* multiply by the width */
+//                sum = sum + lhs[i * n + k].clone() * rhs[k * p + j].clone();
+//            }
+//            out.push(sum);
+//        }
+//    }
+//    out.into()
+//}
 fn matrix_mul<T, U>(
-    lhs: impl AsRef<[T]>,
-    rhs: impl AsRef<[U]>,
+    lhs: impl WidthGetCloned<T>,
+    rhs: impl WidthGetCloned<U>,
     m: usize,
     n: usize,
     p: usize,
@@ -971,62 +998,104 @@ where
     // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
     // n is the width of A
     // (m * n) mul (n * p) = (m * p) matrix
-    let lhs = lhs.as_ref();
-    let rhs = rhs.as_ref();
-    assert_eq!(
-        m * n,
-        lhs.len(),
-        "lhs matrix must have a size (total length) of m * n"
-    );
-    assert_eq!(
-        n * p,
-        rhs.len(),
-        "rhs matrix must have a size (total length) of n * p"
-    );
     let mut out = Vec::with_capacity(m * p);
     for i in 0..m {
         for j in 0..p {
-            let mut sum = lhs[i * n + 0].clone() * rhs[0 * n + j].clone();
+            //let mut sum = lhs[i * n + 0].clone() * rhs[0 * n + j].clone();
+            let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
             for k in 1..n {
-                /* multiply by the width */
-                sum = sum + lhs[i * n + k].clone() * rhs[k * p + j].clone();
+                sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
             }
             out.push(sum);
         }
     }
     out.into()
 }
-fn matrix_map_a_b<T, U, V, F>(lhs: Box<[T]>, rhs: Box<[U]>, f: F) -> Box<[V]>
-where
-    F: Fn(T, U) -> V,
-{
-    let len = lhs.len();
-    let lhs = lhs.into_iter();
-    let rhs = rhs.into_iter();
-    let mut out = Vec::with_capacity(len);
-    for (x, y) in lhs.zip(rhs) {
-        out.push(f(x, y));
+//fn matrix_map_a_b<T, U, V, F>(lhs: Box<[T]>, rhs: Box<[U]>, f: F) -> Box<[V]>
+//where
+//    F: Fn(T, U) -> V,
+//{
+//    let len = lhs.len();
+//    let lhs = lhs.into_iter();
+//    let rhs = rhs.into_iter();
+//    let mut out = Vec::with_capacity(len);
+//    for (x, y) in lhs.zip(rhs) {
+//        out.push(f(x, y));
+//    }
+//    out.into()
+//}
+//fn matrix_map_a_b<T, U, V>(lhs: Box<[T]>, rhs: Box<[U]>, f: impl Fn(T, U) -> V) -> Box<[V]>
+//{
+//    let len = lhs.len();
+//    let lhs = lhs.into_iter();
+//    let rhs = rhs.into_iter();
+//    let mut out = Vec::with_capacity(len);
+//    for (x, y) in lhs.zip(rhs) {
+//        out.push(f(x, y));
+//    }
+//    out.into()
+//}
+// Looks cool but wont work with the accessing strategy
+fn matrix_map_a_b<T, U, V>(
+    lhs: impl WidthGetUnsafe<T>,
+    rhs: impl WidthGetUnsafe<U>,
+    m: usize,
+    n: usize,
+    f: impl Fn(T, U) -> V,
+) -> Box<[V]> {
+    let mut out = Vec::with_capacity(n * m);
+    for i in 0..m {
+        for j in 0..n {
+            let left = unsafe { lhs.width_get_unsafe(i, n, j) };
+            let right = unsafe { rhs.width_get_unsafe(i, n, j) };
+            out.push(f(left, right));
+        }
     }
+    let _ = ManuallyDrop::new(lhs);
+    let _ = ManuallyDrop::new(rhs);
     out.into()
 }
-fn matrix_map_a_b_override_a<T, U, F>(mut lhs: Box<[T]>, rhs: Box<[U]>, f: F) -> Box<[T]>
+//fn matrix_map_a_b_override_a<T, U, F>(mut lhs: Box<[T]>, rhs: Box<[U]>, f: F) -> Box<[T]>
+//where
+//    F: Fn(T, U) -> T,
+//{
+//    let mut rhs = rhs.into_iter();
+//    let lhs_ptr = lhs.as_ptr();
+//    for i in 0..lhs.len() {
+//        // SAFETY: intuitively it seems safe
+//        let lhs_val = unsafe { lhs_ptr.add(i).read() };
+//        lhs[i] = f(lhs_val, rhs.next().unwrap());
+//    }
+//    lhs
+//}
+fn matrix_map_a_b_override_a<T, U, Out>(mut lhs: Out, rhs: impl WidthGetUnsafe<U>, m: usize, n: usize, f: impl Fn(T, U) -> T) -> Out
 where
-    F: Fn(T, U) -> T,
+    Out: WidthGetUnsafe<T> + WidthAssign<T>,
 {
-    let mut rhs = rhs.into_iter();
-    let lhs_ptr = lhs.as_ptr();
-    for i in 0..lhs.len() {
-        // SAFETY: intuitively it seems safe
-        let lhs_val = unsafe { lhs_ptr.add(i).read() };
-        lhs[i] = f(lhs_val, rhs.next().unwrap());
+    for i in 0..m {
+        for j in 0..n {
+            let left = unsafe {
+                lhs.width_get_unsafe(i, n, j)
+            };
+            // SAFETY: idk
+            let right = unsafe { rhs.width_get_unsafe(i, n, j) };
+            lhs.assign(f(left, right), i, n, j);
+        }
     }
+    let _ = ManuallyDrop::new(rhs);
     lhs
 }
-fn matrix_sub<T, U>(lhs: Box<[T]>, rhs: Box<[U]>) -> Box<[<T as Sub<U>>::Output]>
+//fn matrix_sub<T, U>(lhs: Box<[T]>, rhs: Box<[U]>) -> Box<[<T as Sub<U>>::Output]>
+//where
+//    T: Sub<U>,
+//{
+//    matrix_map_a_b(lhs, rhs, |a, b| a - b)
+//}
+fn matrix_sub<T, U>(lhs: impl WidthGetUnsafe<T>, rhs: impl WidthGetUnsafe<U>, m: usize, n: usize) -> Box<[<T as Sub<U>>::Output]>
 where
     T: Sub<U>,
 {
-    matrix_map_a_b(lhs, rhs, |a, b| a - b)
+    matrix_map_a_b(lhs, rhs, m, n, |a, b| a - b)
 }
 impl<T, U> Sub<Matrix<U>> for Matrix<T>
 where
@@ -1035,9 +1104,9 @@ where
     type Output = Matrix<<T as Sub<U>>::Output>;
     fn sub(self, rhs: Matrix<U>) -> Self::Output {
         let m = self.height();
-        //let n = self.width();
+        let n = self.width();
         Matrix {
-            data: matrix_sub(self.data, rhs.data),
+            data: matrix_sub(self.data, rhs.data, m, n),
             height: m,
         }
     }
@@ -1047,8 +1116,34 @@ type AddOut<T, U> = <T as Add<U>>::Output;
 
 // lets you add an m * n matrix to a m * 1 matrix by extending it to width n
 // lhs is the m * n matrix, rhs is the m * 1 matrix
+//fn add_extended<T, U>(
+//    lhs: impl AsRef<[T]>,
+//    rhs: impl AsRef<[U]>,
+//    m: usize,
+//    n: usize,
+//) -> Box<[AddOut<T, U>]>
+//where
+//    T: Add<U>,
+//    T: Clone,
+//    U: Clone,
+//{
+//    let lhs = lhs.as_ref();
+//    let rhs = rhs.as_ref();
+//    assert!(rhs.len() == m);
+//    assert_eq!(lhs.len(), m * n);
+//    let mut out = Vec::with_capacity(m * n); /* the output matrix */
+//    for i in 0..m {
+//        for j in 0..n {
+//            let left = get_cloned(lhs, n, i, j);
+//            //let number = lhs[i * n + j].clone() + rhs[i].clone();
+//            let number = left + rhs[i].clone();
+//            out.push(number);
+//        }
+//    }
+//    out.into()
+//}
 fn add_extended<T, U>(
-    lhs: impl AsRef<[T]>,
+    lhs: impl WidthGetCloned<T>,
     rhs: impl AsRef<[U]>,
     m: usize,
     n: usize,
@@ -1058,14 +1153,15 @@ where
     T: Clone,
     U: Clone,
 {
-    let lhs = lhs.as_ref();
+    //let lhs = lhs.as_ref();
     let rhs = rhs.as_ref();
     assert!(rhs.len() == m);
-    assert_eq!(lhs.len(), m * n);
+    //assert_eq!(lhs.len(), m * n);
     let mut out = Vec::with_capacity(m * n); /* the output matrix */
     for i in 0..m {
         for j in 0..n {
-            let left = get_cloned(lhs, n, i, j);
+            let left = lhs.width_get_cloned(i, n, j);
+            //let left = get_cloned(lhs, n, i, j);
             //let number = lhs[i * n + j].clone() + rhs[i].clone();
             let number = left + rhs[i].clone();
             out.push(number);
@@ -1074,34 +1170,57 @@ where
     out.into()
 }
 
-fn map_extended_self<T, U, F>(
-    mut lhs: Box<[T]>,
+// lhs is a m * n matrix
+// rhs is a m * 1 matrix
+// rhs elements are cloned
+//fn map_extended_self<T, U, F>(
+//    mut lhs: Box<[T]>,
+//    rhs: Box<[U]>,
+//    m: usize,
+//    n: usize,
+//    f: F,
+//) -> Box<[T]>
+//where
+//    F: Fn(T, U) -> T,
+//    U: Clone,
+//{
+//    let lhs_ptr = lhs.as_ptr();
+//    for i in 0..m {
+//        for j in 0..n {
+//            let lhs_val = unsafe { lhs_ptr.add(i * n + j).read() };
+//            lhs[i * n + j] = f(lhs_val, rhs[i].clone());
+//        }
+//    }
+//    lhs
+//}
+fn map_extended_self<T, U, F, Out>(
+    mut lhs: Out,
     rhs: Box<[U]>,
     m: usize,
     n: usize,
     f: F,
-) -> Box<[T]>
+) -> Out
 where
     F: Fn(T, U) -> T,
     U: Clone,
+    Out: WidthGetUnsafe<T> + WidthAssign<T>
 {
-    let lhs_ptr = lhs.as_ptr();
     for i in 0..m {
         for j in 0..n {
-            let lhs_val = unsafe { lhs_ptr.add(i * n + j).read() };
-            lhs[i * n + j] = f(lhs_val, rhs[i].clone());
+            let lhs_val = unsafe { lhs.width_get_unsafe(i, n, j) };
+            lhs.assign(f(lhs_val, rhs[i].clone()), i, n, j);
         }
     }
     lhs
 }
 
-fn get_cloned<T>(x: impl AsRef<[T]>, n: usize, i: usize, j: usize) -> T
-where
-    T: Clone,
-{
-    let x = x.as_ref();
-    x.get(i * n + j).unwrap().clone()
-}
+//fn get_cloned<T>(x: impl AsRef<[T]>, n: usize, i: usize, j: usize) -> T
+//where
+//    T: Clone,
+//{
+//    let x = x.as_ref();
+//    x.get(i * n + j).unwrap().clone()
+//}
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
 struct Nan<T: FloatCore> {
@@ -1167,15 +1286,87 @@ impl<'b, T> AsMat<T> for BorrowedMat<'b, T> {
         }
     }
 }
-//impl<'a, T> From<&'a Matrix<T>> for BorrowedMat<'a, T> {
-//    fn from(value: &'a Matrix<T>) -> Self {
-//        BorrowedMat {
-//            data: &value.data,
-//            height: value.height(),
-//            transposed: false,
-//        }
-//    }
-//}
+
+pub trait Get<T> {
+    fn get(&self, i: usize, j: usize) -> &T;
+}
+pub trait GetCloned<T> {
+    fn get_cloned(&self, i: usize, j: usize) -> T;
+}
+pub trait WidthGetCloned<T> {
+    fn width_get_cloned(&self, i: usize, n: usize, j: usize) -> T;
+}
+pub trait GetUnsafe<T> {
+    unsafe fn get_unsafe(&self, i: usize, j: usize) -> T;
+}
+pub trait WidthGetUnsafe<T> {
+    unsafe fn width_get_unsafe(&self, i: usize, n: usize, j: usize) -> T;
+}
+
+pub trait WidthAssign<T> {
+    fn assign(&mut self, x: T, i: usize, n: usize, j: usize);
+}
+
+impl<T> WidthGetCloned<T> for &[T]
+where
+    T: Clone,
+{
+    fn width_get_cloned(&self, i: usize, n: usize, j: usize) -> T {
+        self[i * n + j].clone()
+    }
+}
+impl<T> WidthAssign<T> for [T] {
+    fn assign(&mut self, x: T, i: usize, n: usize, j: usize) {
+        self[i * n + j] = x;
+    }
+}
+impl<T> WidthAssign<T> for Box<[T]> {
+    fn assign(&mut self, x: T, i: usize, n: usize, j: usize) {
+        self[i * n + j] = x;
+    }
+    
+}
+
+impl<T, U: AsMat<T>> Get<T> for U {
+    fn get(&self, mut i: usize, mut j: usize) -> &T {
+        // TODO could probably add some asserts
+        // axes swap
+        if self.is_transposed() {
+            swap(&mut i, &mut j);
+        }
+        self.data().get(i * self.width() + j).unwrap()
+    }
+}
+impl<T, U: AsMat<T>> GetCloned<T> for U
+where
+    T: Clone,
+{
+    fn get_cloned(&self, i: usize, j: usize) -> T {
+        self.get_owned(i, j)
+    }
+}
+impl<T> WidthGetUnsafe<T> for Box<[T]> {
+    unsafe fn width_get_unsafe(&self, i: usize, n: usize, j: usize) -> T {
+        let ptr = self.as_ptr();
+        unsafe { ptr.add(i * n + j).read() }
+    }
+}
+impl<T> WidthGetCloned<T> for Box<[T]> 
+where T: Clone
+{
+    fn width_get_cloned(&self, i: usize, n: usize, j: usize) -> T {
+        self[i * n + j].clone()
+    }
+}
+impl<T, U: AsMat<T>> GetUnsafe<T> for U {
+    unsafe fn get_unsafe(&self, mut i: usize, mut j: usize) -> T {
+        if self.is_transposed() {
+            swap(&mut i, &mut j);
+        }
+        let ptr = self.data().as_ptr();
+        unsafe { ptr.add(i * self.width() + j).read() }
+    }
+}
 
 impl From<u16> for Nan<f32> {
     fn from(value: u16) -> Self {
@@ -1360,49 +1551,49 @@ impl<T: FloatCore> Neg for Nan<T> {
 //    delC_delW_list.try_into().unwrap(),
 //    delC_delB_list.try_into().unwrap(),
 //)
-    //for epoch in 0..5 {
-    //    println!("starting epoch: {epoch}");
-    //    for (images_chunk, classifications) in images
-    //        .chunks(minibatch_size)
-    //        .zip(classification.chunks(minibatch_size))
-    //    {
-    //        assert_eq!(images_chunk.len(), classifications.len());
-    //        // make y_hat which is a matrix like this with height 10
-    //        // [0.0, 0.0, 1.0, ...], [1.0, 0.0, ...]
-    //        let mut y_vec = Vec::with_capacity(classifications.len() * 10);
-    //        for x in classifications {
-    //            let x = *x;
-    //            for i in 0..10 {
-    //                if i == x {
-    //                    y_vec.push(not_nan(1.0));
-    //                } else {
-    //                    y_vec.push(not_nan(0.0));
-    //                }
-    //            }
-    //        }
-    //        let len = y_vec.len();
-    //        let y = Matrix {
-    //            data: y_vec.into(),
-    //            height: len / 10,
-    //        }
-    //        .transpose();
-    //        let height = images_chunk.len();
-    //        let vec: Vec<_> = images_chunk.iter().flatten().map(|x| *x).collect();
-    //        let mat = Matrix {
-    //            data: vec.into(),
-    //            height,
-    //        }
-    //        .transpose();
-    //        network.feed_forward(&mat, activation);
-    //        let (a, z) = network.feed_forward_results();
+//for epoch in 0..5 {
+//    println!("starting epoch: {epoch}");
+//    for (images_chunk, classifications) in images
+//        .chunks(minibatch_size)
+//        .zip(classification.chunks(minibatch_size))
+//    {
+//        assert_eq!(images_chunk.len(), classifications.len());
+//        // make y_hat which is a matrix like this with height 10
+//        // [0.0, 0.0, 1.0, ...], [1.0, 0.0, ...]
+//        let mut y_vec = Vec::with_capacity(classifications.len() * 10);
+//        for x in classifications {
+//            let x = *x;
+//            for i in 0..10 {
+//                if i == x {
+//                    y_vec.push(not_nan(1.0));
+//                } else {
+//                    y_vec.push(not_nan(0.0));
+//                }
+//            }
+//        }
+//        let len = y_vec.len();
+//        let y = Matrix {
+//            data: y_vec.into(),
+//            height: len / 10,
+//        }
+//        .transpose();
+//        let height = images_chunk.len();
+//        let vec: Vec<_> = images_chunk.iter().flatten().map(|x| *x).collect();
+//        let mat = Matrix {
+//            data: vec.into(),
+//            height,
+//        }
+//        .transpose();
+//        network.feed_forward(&mat, activation);
+//        let (a, z) = network.feed_forward_results();
 
-    //        let delta = network.back_prop(a.last().unwrap(), z, y, del_activation, del_cost);
-    //        network.gradient_descent(
-    //            not_nan(0.4),
-    //            delta,
-    //            //a,
-    //            not_nan(50.0),
-    //            training_set_size.into(),
-    //        );
-    //    }
-    //}
+//        let delta = network.back_prop(a.last().unwrap(), z, y, del_activation, del_cost);
+//        network.gradient_descent(
+//            not_nan(0.4),
+//            delta,
+//            //a,
+//            not_nan(50.0),
+//            training_set_size.into(),
+//        );
+//    }
+//}
