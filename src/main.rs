@@ -1,5 +1,6 @@
 //#![allow(unused)]
-#![allow(unused_imports, dead_code, unused_mut, unused_parens)]
+//#![allow(unused_imports, dead_code, unused_mut, unused_parens)]
+#![allow(unused_imports, unused_mut, unused_parens)]
 #![feature(generic_const_exprs)]
 #![feature(read_le)]
 #![allow(incomplete_features)]
@@ -122,15 +123,15 @@ type MulOut<T, U> = <T as Mul<U>>::Output;
 //    }
 //}
 
-trait Zip<const N: usize, T, U> {
-    fn zip(self, b: [U; N]) -> [(T, U); N];
-}
-impl<const N: usize, T, U> Zip<N, T, U> for [T; N] {
-    fn zip(self, b: [U; N]) -> [(T, U); N] {
-        let mut b = b.into_iter();
-        self.map(|v| (v, b.next().unwrap()))
-    }
-}
+//trait Zip<const N: usize, T, U> {
+//    fn zip(self, b: [U; N]) -> [(T, U); N];
+//}
+//impl<const N: usize, T, U> Zip<N, T, U> for [T; N] {
+//    fn zip(self, b: [U; N]) -> [(T, U); N] {
+//        let mut b = b.into_iter();
+//        self.map(|v| (v, b.next().unwrap()))
+//    }
+//}
 
 //impl<const N: usize, T, U> Add<VecN<N, U>> for VecN<N, T>
 //where
@@ -173,21 +174,6 @@ impl MnistData {
     }
 }
 
-//fn meow<T, F>(images_data: MnistData, f: F) -> Box<[Box<[T]>]>
-//where
-//    F: Fn(u8) -> T,
-//{
-//    let image_shape = (images_data.sizes[1] * images_data.sizes[2]) as usize;
-//    let mut images: Vec<Box<[T]>> = Vec::new();
-//    for i in 0..images_data.sizes[0] as usize {
-//        let start = i * image_shape;
-//        let image_data = images_data.data[start..start + image_shape].to_vec();
-//        let image_data: Vec<T> = image_data.into_iter().map(|x| f(x)).collect();
-//        images.push(image_data.into());
-//    }
-//    let images: Box<[Box<[T]>]> = images.into();
-//    images
-//}
 fn meow<T, F>(images_data: MnistData, f: F) -> Box<[T]>
 where
     F: Fn(u8) -> T,
@@ -252,7 +238,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let one = not_nan(1.0);
     //let zero = not_nan(0.0);
     let distribution = rand_distr::Normal::new(0.0, 1.0)?;
-    //let weights_dist = rand_distr::Normal::new(0.0, 1.0 / (image_shape as ScalarType).sqrt())?;
     let rng = &mut rand::rng();
     let rng2 = &mut rand::rng();
     let mut network = Network::new(
@@ -270,6 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let del_cost = |_, a: Matrix<_>, y| a.sub_self(y);
     for epoch in 0..1 {
         println!("starting epoch {epoch}");
+        // classification and images seem to be okay
         network.run_epoch(
             &images,
             &classification,
@@ -294,21 +280,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let x = meow(test_images_data, |x| {
         not_nan(Into::<ScalarType>::into(x) / 255.0)
     });
-    let height = x.len();
+    let height = x.len() / image_shape;
     //let x: Vec<_> = x.into_iter().flatten().collect();
     let test_images = Matrix {
         data: x.into(),
         height,
-    }
-    .transpose();
+    }.transpose();
+    assert_eq!(test_images.width(), test_labels.data.len());
     network.feed_forward(&test_images, activation);
     let (a, _) = network.feed_forward_results();
     let y_hat = a.last().unwrap();
     let mut correct_count = 0;
-    for j in 0..height {
+    for j in 0..y_hat.width() {
         let mut max = y_hat.get_owned(0, j);
         let mut max_index = 0;
-        for i in 0..10 {
+        for i in 1..10 {
             let x = y_hat.get_owned(i, j);
             if x > max {
                 max = x;
@@ -365,7 +351,7 @@ struct Network<const LAYER_COUNT: usize, T>
 where
     [(); LAYER_COUNT - 1]:,
 {
-    layout_heights: [usize; LAYER_COUNT],
+    _layout_heights: [usize; LAYER_COUNT],
     biases: [Box<[T]>; LAYER_COUNT - 1],
     weights: [Matrix<T>; LAYER_COUNT - 1],
     a_buffer: Vec<Matrix<T>>,
@@ -403,7 +389,7 @@ where
         let a_buffer = Vec::new();
         let z_buffer = Vec::new();
         Network {
-            layout_heights: heights,
+            _layout_heights: heights,
             biases,
             weights,
             a_buffer,
@@ -433,7 +419,8 @@ where
             let biases_layer = self.biases[i].as_ref();
             let layer = &layers_a[i];
             // TODO add_extended_slice_self
-            let z = (&self.weights[i] * layer).add_extended_slice(biases_layer);
+            //let z = (&self.weights[i] * layer).add_extended_slice(biases_layer);
+            let z = (&self.weights[i] * layer).add_extended_slice_self(biases_layer);
             layers_z.push(z.clone());
             //let a = z.map(&activation_fn);
             let a = z.map_self(&activation_fn);
@@ -447,14 +434,14 @@ where
         let layers_z = &self.z_buffer;
         (layers_a.as_array().unwrap(), layers_z.as_array().unwrap())
     }
-    #[allow(non_snake_case)]
-    pub fn back_prop<'a, F, DCf>(
+    //#[allow(non_snake_case)]
+    pub fn back_prop<'a>(
         &self,
         y_hat: impl AsMat<T>,
         z: &[Matrix<T>; LAYER_COUNT - 1],
         y: impl AsMat<T>,
-        del_activation_fn: F,
-        del_cost: DCf,
+        del_activation_fn: impl Fn(T) -> T,
+        del_cost: impl Fn(Matrix<T>, Matrix<T>, Matrix<T>) -> Matrix<T>,
     ) -> Matrix<Matrix<T>>
     /* more like a matrix of vectors */
     where
@@ -462,17 +449,14 @@ where
         T: Add<Output = T>,
         T: Scalar,
         T: Mul<T, Output = T>,
-        F: Fn(T) -> T,
-        DCf: Fn(Matrix<T>, Matrix<T>, Matrix<T>) -> Matrix<T>,
     {
-        //let y_hat = a.last().unwrap();
-        //let y_hat = y_hat.into();
-        //let y = y.into();
+        //assert_eq!(y.width(), y_hat.width());
         let mut delta_mat = Vec::with_capacity(LAYER_COUNT - 1);
         // implemented like this because i dont know how to do it vectorised
         for sample in 0..y.width() {
             let sample_y_hat = y_hat.get_column(sample);
             let sample_y = y.get_column(sample);
+            #[allow(non_snake_case)]
             let sample_z_L = z.last().unwrap().get_column(sample);
 
             let layer_delta = del_cost(sample_z_L, sample_y_hat, sample_y);
@@ -546,6 +530,7 @@ where
         &mut self,
         train_data: &[T],
         train_y: &[T],
+        // these two are implicitly part of layout_heights
         minibatch_size: usize,
         input_height: usize,
         y_height: usize,
@@ -563,6 +548,7 @@ where
             .chunks(minibatch_size * input_height)
             .zip(train_y.chunks(minibatch_size * y_height))
         {
+            // the dimensions of these two seem fine
             let train_mat = BorrowedMat {
                 data: train_data,
                 height: minibatch_size,
@@ -587,19 +573,19 @@ where
     }
 }
 
-trait TestInvalid {
-    fn is_inf(&self) -> bool;
-    fn is_nan(&self) -> bool;
-}
+//trait TestInvalid {
+//    fn is_inf(&self) -> bool;
+//    fn is_nan(&self) -> bool;
+//}
 
-impl TestInvalid for f64 {
-    fn is_inf(&self) -> bool {
-        !self.is_finite()
-    }
-    fn is_nan(&self) -> bool {
-        f64::is_nan(*self)
-    }
-}
+//impl TestInvalid for f64 {
+//    fn is_inf(&self) -> bool {
+//        !self.is_finite()
+//    }
+//    fn is_nan(&self) -> bool {
+//        f64::is_nan(*self)
+//    }
+//}
 
 impl<T, U> Mul<Matrix<U>> for Matrix<T>
 where
@@ -613,7 +599,8 @@ where
         let m = self.height();
         let n = rhs.height();
         let p = rhs.width();
-        let x = matrix_mul(&self.data[..], rhs.data, m, n, p);
+        //let x = matrix_mul(&self.data[..], &rhs.data[..], m, n, p);
+        let x = matrix_mul(self.data, rhs.data, m, n, p);
         Matrix { data: x, height: m }
     }
 }
@@ -718,10 +705,29 @@ where
 pub trait AsMat<T> {
     fn as_mat<'a>(&'a self) -> BorrowedMat<'a, T>;
     fn height(&self) -> usize {
-        self.as_mat().height
+        if !self.is_transposed() {
+            self.as_mat().height
+        }
+        else {
+            self.as_mat().data.len() / self.as_mat().height
+        }
     }
     fn width(&self) -> usize {
-        self.as_mat().data.len() / self.height()
+        if self.is_transposed() {
+            self.as_mat().height
+        }
+        else {
+            self.as_mat().data.len() / self.as_mat().height
+        }
+    }
+    fn data_height(&self) -> usize {
+        self.as_mat().height
+    }
+    fn data_width(&self) -> usize {
+        self.as_mat().data.len() / self.as_mat().height
+    }
+    fn shape(&self) -> (usize, usize) {
+        (self.height(), self.width())
     }
     fn get_column(&self, j: usize) -> Matrix<T>
     where
@@ -745,15 +751,12 @@ pub trait AsMat<T> {
     {
         let mut new_i = i;
         let mut new_j = j;
+        assert!(new_i < self.height());
+        assert!(new_j < self.width());
         if self.is_transposed() {
             swap(&mut new_i, &mut new_j);
         }
-        assert!(new_i < self.height());
-        assert!(new_j < self.width());
-        self.as_mat().data[new_i * self.width() + new_j].clone()
-    }
-    fn shape(&self) -> (usize, usize) {
-        (self.height(), self.width())
+        self.as_mat().data[new_i * self.data_width() + new_j].clone()
     }
     fn data(&self) -> &[T] {
         self.as_mat().data
@@ -800,10 +803,14 @@ pub trait AsMat<T> {
     where
         T: Clone,
     {
-        Matrix {
-            data: self.data().into(),
-            height: self.height(),
+        // this must be done because it might be transposed
+        let mut x = Vec::new();
+        for i in 0..self.height() {
+            for j in 0..self.width() {
+                x.push(self.get_owned(i, j));
+            }
         }
+        Matrix { data: x.into(), height: self.height() }
     }
 }
 impl<T> Matrix<T> {
@@ -847,7 +854,7 @@ impl<T> Matrix<T> {
     //}
     // most of the time T and U will be the exact same,
     // but the added flexibility might be nice
-    pub fn add_extended_slice_self<U>(self, rhs: Box<[U]>) -> Matrix<T>
+    pub fn add_extended_slice_self<U>(self, rhs: &[U]) -> Matrix<T>
     where
         T: Add<U, Output = T>,
         U: Clone,
@@ -982,6 +989,8 @@ impl<T> Matrix<T> {
 //    }
 //    out.into()
 //}
+
+// i think this implementation is fiiine for now
 fn matrix_mul<T, U>(
     lhs: impl WidthGetCloned<T>,
     rhs: impl WidthGetCloned<U>,
@@ -1195,7 +1204,7 @@ where
 //}
 fn map_extended_self<T, U, F, Out>(
     mut lhs: Out,
-    rhs: Box<[U]>,
+    rhs: &[U],
     m: usize,
     n: usize,
     f: F,
@@ -1223,6 +1232,7 @@ where
 //}
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
+#[repr(transparent)]
 struct Nan<T: FloatCore> {
     inner: NotNan<T>,
 }
@@ -1239,18 +1249,6 @@ pub struct BorrowedMat<'a, T> {
     data: &'a [T],
     height: usize,
     transposed: bool,
-}
-
-impl<'a, T> BorrowedMat<'a, T> {
-    fn clone_to_matrix(&self) -> Matrix<T>
-    where
-        T: Clone,
-    {
-        Matrix {
-            data: self.data.into(),
-            height: self.height,
-        }
-    }
 }
 
 //impl<'a, T: Clone> From<BorrowedMat<'a, T>> for Matrix<T> {
@@ -1282,7 +1280,7 @@ impl<'b, T> AsMat<T> for BorrowedMat<'b, T> {
         BorrowedMat {
             data: self.data,
             height: self.height,
-            transposed: false,
+            transposed: self.transposed,
         }
     }
 }
@@ -1311,6 +1309,7 @@ impl<T> WidthGetCloned<T> for &[T]
 where
     T: Clone,
 {
+    #[inline(always)]
     fn width_get_cloned(&self, i: usize, n: usize, j: usize) -> T {
         self[i * n + j].clone()
     }
@@ -1324,7 +1323,6 @@ impl<T> WidthAssign<T> for Box<[T]> {
     fn assign(&mut self, x: T, i: usize, n: usize, j: usize) {
         self[i * n + j] = x;
     }
-    
 }
 
 impl<T, U: AsMat<T>> Get<T> for U {
@@ -1334,7 +1332,7 @@ impl<T, U: AsMat<T>> Get<T> for U {
         if self.is_transposed() {
             swap(&mut i, &mut j);
         }
-        self.data().get(i * self.width() + j).unwrap()
+        self.data().get(i * self.data_width() + j).unwrap()
     }
 }
 impl<T, U: AsMat<T>> GetCloned<T> for U
@@ -1354,6 +1352,7 @@ impl<T> WidthGetUnsafe<T> for Box<[T]> {
 impl<T> WidthGetCloned<T> for Box<[T]> 
 where T: Clone
 {
+    #[inline(always)]
     fn width_get_cloned(&self, i: usize, n: usize, j: usize) -> T {
         self[i * n + j].clone()
     }
@@ -1364,7 +1363,8 @@ impl<T, U: AsMat<T>> GetUnsafe<T> for U {
             swap(&mut i, &mut j);
         }
         let ptr = self.data().as_ptr();
-        unsafe { ptr.add(i * self.width() + j).read() }
+        //unsafe { ptr.add(i * self.width() + j).read() }
+        unsafe { ptr.add(i * self.data_width() + j).read() }
     }
 }
 
@@ -1384,9 +1384,9 @@ impl Nan<f32> {
     fn exp(self) -> Self {
         not_nan(self.into_inner().exp())
     }
-    fn sqrt(self) -> Self {
-        not_nan(self.into_inner().sqrt())
-    }
+    //fn sqrt(self) -> Self {
+    //    not_nan(self.into_inner().sqrt())
+    //}
 }
 
 impl Scalar for Nan<f32> {
