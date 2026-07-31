@@ -3,11 +3,12 @@
 #![allow(unused_imports, unused_mut, unused_parens)]
 #![feature(generic_const_exprs)]
 #![feature(read_le)]
+#![feature(vec_from_fn)]
 #![allow(incomplete_features)]
 #![feature(unboxed_closures)]
 
 use std::{
-    any::TypeId, array::{self, TryFromSliceError}, borrow::Borrow, convert::identity, error::Error, fmt::{Debug, Display}, fs::File, io::{Cursor, Read}, mem::{self, MaybeUninit, swap}, ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}, ptr::NonNull, slice, time,
+    any::TypeId, array::{self, TryFromSliceError}, borrow::Borrow, convert::identity, error::Error, fmt::{Debug, Display}, fs::File, io::{Cursor, Read}, mem::{self, MaybeUninit, swap}, ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}, ptr::NonNull, slice, sync::Mutex, thread, time,
 };
 
 // might be useful? idk lol
@@ -248,12 +249,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             not_nan(distribution.sample(rng2))
         },
     );
-    let minibatch_size = 50;
+    let minibatch_size = 40;
     // prepare minibatch
     let activation = |x: NonNanType| one / (one + (-x).exp());
     let del_activation = |x| activation(x) * (one - activation(x));
     let del_cost = |_, a: Matrix<_>, y| a.sub_self(y);
-    for epoch in 0..10 {
+
+    let test_images_data = MnistData::new(&mut File::open("t10k-images.idx3-ubyte")?)?;
+    let test_labels = MnistData::new(&mut File::open("t10k-labels.idx1-ubyte")?)?;
+    let x = meow(test_images_data, |x| {
+        not_nan(Into::<ScalarType>::into(x) / 255.0)
+    });
+    let height = x.len() / image_shape;
+    let test_images = Matrix {
+        data: x.into(),
+        height,
+    }
+    .transpose();
+
+    let mut previous_correct_count = 0;
+    let mut no_improvement_in_counter = 0;
+    let mut learning_rate = not_nan(0.25);
+    let initial_learning_rate = learning_rate;
+    for epoch in 0..1 {
         println!("starting epoch {epoch}");
         // classification and images seem to be okay
         network.run_epoch(
@@ -263,49 +281,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             activation,
             del_cost,
             del_activation,
-            not_nan(0.25),
-            not_nan(1000.0),
+            learning_rate,
+            not_nan(200.0),
             training_set_size.into(),
         );
+        let test_matrix = BorrowedMat {
+            data: &test_labels.data,
+            height: test_labels.data.len(),
+            transposed: false,
+        };
+        let correct_count = network.test(&test_images, test_matrix, activation);
+        let correct_ratio = correct_count as f64 / height as f64;
+        println!(
+            "correct count: {}, correct percentage: {}%",
+            correct_count,
+            correct_ratio * 100.0
+        );
+        println!("learning rate: {:?}", learning_rate);
+        if previous_correct_count >= correct_count {
+            no_improvement_in_counter += 1;
+        } else {
+            no_improvement_in_counter = 0;
+        }
+        if no_improvement_in_counter >= 1 {
+            learning_rate = learning_rate / not_nan(10.0);
+        }
+        if learning_rate < initial_learning_rate / not_nan(20000.0) 
+            || no_improvement_in_counter == 10
+        {
+            break;
+        }
+        previous_correct_count = correct_count;
     }
 
     // forward prop on test sample,
     // check for many were correct,
     // report that as a percentage
     //let
-    let test_images_data = MnistData::new(&mut File::open("t10k-images.idx3-ubyte")?)?;
-    let test_labels = MnistData::new(&mut File::open("t10k-labels.idx1-ubyte")?)?;
-    let x = meow(test_images_data, |x| {
-        not_nan(Into::<ScalarType>::into(x) / 255.0)
-    });
-    let height = x.len() / image_shape;
-    //let x: Vec<_> = x.into_iter().flatten().collect();
-    let test_images = Matrix {
-        data: x.into(),
-        height,
-    }.transpose();
-    assert_eq!(test_images.width(), test_labels.data.len());
-    network.feed_forward(&test_images, activation);
-    let (a, _) = network.feed_forward_results();
-    let y_hat = a.last().unwrap();
-    let mut correct_count = 0;
-    for j in 0..y_hat.width() {
-        let mut max = y_hat.get_owned(0, j);
-        let mut max_index = 0;
-        for i in 1..10 {
-            let x = y_hat.get_owned(i, j);
-            if x > max {
-                max = x;
-                max_index = i;
-            }
-        }
-        if max_index == test_labels.data[j] as usize {
-            correct_count += 1;
-        }
-    }
-    let correct_ratio = correct_count as f64 / height as f64;
-    println!("correct percentage: {}%", correct_ratio * 100.0);
-    println!("correct count: {}", correct_count);
+    //assert_eq!(test_images.width(), test_labels.data.len());
+    //network.feed_forward(&test_images, activation);
+    //let (a, _) = network.feed_forward_results();
+    //let y_hat = a.last().unwrap();
+    //let mut correct_count = 0;
+    //for j in 0..y_hat.width() {
+    //    let mut max = y_hat.get_owned(0, j);
+    //    let mut max_index = 0;
+    //    for i in 1..10 {
+    //        let x = y_hat.get_owned(i, j);
+    //        if x > max {
+    //            max = x;
+    //            max_index = i;
+    //        }
+    //    }
+    //    if max_index == test_labels.data[j] as usize {
+    //        correct_count += 1;
+    //    }
+    //}
+    //let correct_ratio = correct_count as f64 / height as f64;
+    //println!("correct percentage: {}%", correct_ratio * 100.0);
+    //println!("correct count: {}", correct_count);
 
     let end = time::Instant::now();
     let diff = end - start;
@@ -394,7 +428,7 @@ where
             z_buffer,
         }
     }
-    //pub fn feed_forward<'a, F>(&mut self, input: impl Into<&'a Matrix<T>>, activation_fn: F)
+    // TODO verify that the logic here is correct
     pub fn feed_forward<'a, F>(&mut self, input: impl AsMat<T>, activation_fn: F)
     /*-> (&[Matrix<T>; LAYER_COUNT], &[Matrix<T>; LAYER_COUNT - 1])*/
     /* a, z */
@@ -402,9 +436,9 @@ where
         F: Fn(T) -> T,
         T: Mul<Output = T> + Add<Output = T> + Clone,
         T: 'a,
+        T: Send + Sync,
+        T: Debug,
     {
-        //let input = input.into();
-        // TODO REMOVE AFTER TESTING
         self.a_buffer.clear();
         self.z_buffer.clear();
         let layers_a = &mut self.a_buffer;
@@ -418,7 +452,11 @@ where
             let layer = &layers_a[i];
             // TODO add_extended_slice_self
             //let z = (&self.weights[i] * layer).add_extended_slice(biases_layer);
-            let z = (&self.weights[i] * layer).add_extended_slice_self(biases_layer);
+            let left = (&self.weights[i] * layer);
+            // seems to work
+            let z = left.add_extended_slice_self(biases_layer);
+
+            //let z = (&self.weights[i] * layer).add_extended_slice_self(biases_layer);
             layers_z.push(z.clone());
             //let a = z.map(&activation_fn);
             let a = z.map_self(&activation_fn);
@@ -542,6 +580,7 @@ where
     ) where
         T: Clone + Mul<Output = T> + Add<Output = T> + Scalar,
         T: From<u16>,
+        T: Debug,
     {
         let input_height = *self._layout_heights.first().unwrap();
         let y_height = *self._layout_heights.last().unwrap();
@@ -572,28 +611,46 @@ where
             self.gradient_descent(learning_rate, delta, lambda, training_set_size);
         }
     }
+    fn test<U>(
+        &mut self,
+        test_data: impl AsMat<T>,
+        test_labels: impl AsMat<U>,
+        activation_fn: impl Fn(T) -> T,
+    ) -> u32
+    where
+        T: Clone + Add<Output = T> + Mul<Output = T> + PartialOrd,
+        U: Into<usize> + Clone,
+        T: Debug,
+        T: Send + Sync,
+    {
+        self.feed_forward(test_data, activation_fn);
+        let (a, _) = self.feed_forward_results();
+        let y_hat = a.last().unwrap();
+        let mut correct_count = 0;
+        for j in 0..y_hat.width() {
+            let mut max = y_hat.get_owned(0, j);
+            let mut max_index = 0;
+            for i in 1..10 {
+                let x = y_hat.get_owned(i, j);
+                if x > max {
+                    max = x;
+                    max_index = i;
+                }
+            }
+            if max_index == test_labels.as_mat().data[j].clone().into() {
+                correct_count += 1;
+            }
+        }
+        correct_count
+    }
 }
-
-//trait TestInvalid {
-//    fn is_inf(&self) -> bool;
-//    fn is_nan(&self) -> bool;
-//}
-
-//impl TestInvalid for f64 {
-//    fn is_inf(&self) -> bool {
-//        !self.is_finite()
-//    }
-//    fn is_nan(&self) -> bool {
-//        f64::is_nan(*self)
-//    }
-//}
 
 impl<T, U> Mul<Matrix<U>> for Matrix<T>
 where
-    T: Mul<U>,
+    T: Mul<U> + Sync,
     T: Clone,
-    U: Clone,
-    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output>,
+    U: Clone + Sync,
+    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output> + Send,
 {
     type Output = Matrix<MulOut<T, U>>;
     fn mul(self, rhs: Matrix<U>) -> Self::Output {
@@ -690,9 +747,9 @@ pub trait Scalar:
 impl<T, U> Mul<&Matrix<U>> for &Matrix<T>
 where
     T: Mul<U>,
-    T: Clone,
-    U: Clone,
-    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output>,
+    T: Clone + Sync,
+    U: Clone + Sync,
+    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output> + Send,
 {
     type Output = Matrix<MulOut<T, U>>;
     fn mul(self, rhs: &Matrix<U>) -> Self::Output {
@@ -709,16 +766,14 @@ pub trait AsMat<T> {
     fn height(&self) -> usize {
         if !self.is_transposed() {
             self.as_mat().height
-        }
-        else {
+        } else {
             self.as_mat().data.len() / self.as_mat().height
         }
     }
     fn width(&self) -> usize {
         if self.is_transposed() {
             self.as_mat().height
-        }
-        else {
+        } else {
             self.as_mat().data.len() / self.as_mat().height
         }
     }
@@ -777,7 +832,7 @@ pub trait AsMat<T> {
         );
         let m = self.height();
         let n = self.width();
-        let x = add_extended(self.data(), rhs, m, n);
+        let x = map_extended(self.as_mat(), rhs, m, n, Add::add);
         Matrix { data: x, height: m }
     }
     fn add_extended<'a, U>(&self, rhs: impl AsMat<U>) -> Matrix<AddOut<T, U>>
@@ -788,7 +843,8 @@ pub trait AsMat<T> {
     {
         let m = self.height();
         let n = self.width();
-        let x = add_extended(self.data(), rhs.data(), m, n);
+        // clone to matrix so the transposition is kept
+        let x = map_extended(self.as_mat(), rhs.clone_to_matrix().data, m, n, Add::add);
         Matrix { data: x, height: m }
     }
     fn transpose_clone(&self) -> Matrix<T>
@@ -812,7 +868,10 @@ pub trait AsMat<T> {
                 x.push(self.get_owned(i, j));
             }
         }
-        Matrix { data: x.into(), height: self.height() }
+        Matrix {
+            data: x.into(),
+            height: self.height(),
+        }
     }
 }
 impl<T> Matrix<T> {
@@ -840,22 +899,6 @@ impl<T> Matrix<T> {
             height,
         }
     }
-    //pub fn get_row(&self, i: usize) -> Matrix<T>
-    //where
-    //    T: Clone,
-    //{
-    //    let width = self.width();
-    //    let mut out = Vec::new();
-    //    for j in 0..width {
-    //        out.push(self.get_owned(i, j));
-    //    }
-    //    Matrix {
-    //        data: out.into(),
-    //        height: 1,
-    //    }
-    //}
-    // most of the time T and U will be the exact same,
-    // but the added flexibility might be nice
     pub fn add_extended_slice_self<U>(self, rhs: &[U]) -> Matrix<T>
     where
         T: Add<U, Output = T>,
@@ -864,7 +907,7 @@ impl<T> Matrix<T> {
         let m = self.height();
         let n = self.width();
         Matrix {
-            data: map_extended_self(self.data, rhs, m, n, |x, y| x + y),
+            data: map_extended_self(self.data, rhs, m, n, Add::add),
             height: m,
         }
     }
@@ -877,8 +920,7 @@ impl<T> Matrix<T> {
         }
         self
     }
-    pub fn map_self(mut self, f: impl Fn(T) -> T) -> Self
-    {
+    pub fn map_self(mut self, f: impl Fn(T) -> T) -> Self {
         let self_ptr = self.data.as_ptr();
         for i in 0..self.data.len() {
             let self_val = unsafe { self_ptr.add(i).read() };
@@ -886,8 +928,7 @@ impl<T> Matrix<T> {
         }
         self
     }
-    pub fn map<U>(mut self, f: impl Fn(T) -> U) -> Matrix<U>
-    {
+    pub fn map<U>(mut self, f: impl Fn(T) -> U) -> Matrix<U> {
         let mut out = Vec::with_capacity(self.data.len());
         let height = self.height();
         for x in self.data.into_iter() {
@@ -907,7 +948,8 @@ impl<T> Matrix<T> {
         let mut output = Vec::with_capacity(self_len);
         for i in 0..out_height {
             for j in 0..out_width {
-                // TODO FIX
+                // TODO check if this works
+                // seems to work
                 output.push(x[j * out_height + i].take().unwrap());
             }
         }
@@ -932,6 +974,7 @@ impl<T> Matrix<T> {
             height,
         }
     }
+    // can move to the trait
     pub fn hadamard<U>(self, rhs: Matrix<U>) -> Matrix<<T as Mul<U>>::Output>
     where
         T: Mul<U> + Clone,
@@ -951,9 +994,10 @@ impl<T> Matrix<T> {
     }
 }
 
+// i think this implementation is fiiine for now
 //fn matrix_mul<T, U>(
-//    lhs: impl AsRef<[T]>,
-//    rhs: impl AsRef<[U]>,
+//    lhs: impl WidthGetCloned<T>,
+//    rhs: impl WidthGetCloned<U>,
 //    m: usize,
 //    n: usize,
 //    p: usize,
@@ -967,36 +1011,60 @@ impl<T> Matrix<T> {
 //    // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
 //    // n is the width of A
 //    // (m * n) mul (n * p) = (m * p) matrix
-//    let lhs = lhs.as_ref();
-//    let rhs = rhs.as_ref();
-//    assert_eq!(
-//        m * n,
-//        lhs.len(),
-//        "lhs matrix must have a size (total length) of m * n"
-//    );
-//    assert_eq!(
-//        n * p,
-//        rhs.len(),
-//        "rhs matrix must have a size (total length) of n * p"
-//    );
 //    let mut out = Vec::with_capacity(m * p);
 //    for i in 0..m {
 //        for j in 0..p {
-//            let mut sum = lhs[i * n + 0].clone() * rhs[0 * n + j].clone();
+//            let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
 //            for k in 1..n {
-//                /* multiply by the width */
-//                sum = sum + lhs[i * n + k].clone() * rhs[k * p + j].clone();
+//                sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
 //            }
 //            out.push(sum);
 //        }
 //    }
 //    out.into()
 //}
-
-// i think this implementation is fiiine for now
+//fn matrix_mul<T, U>(
+//    lhs: impl WidthGetCloned<T> + Sync,
+//    rhs: impl WidthGetCloned<U> + Sync,
+//    m: usize,
+//    n: usize,
+//    p: usize,
+//) -> Box<[MulOut<T, U>]>
+//where
+//    T: Mul<U>,
+//    T: Clone,
+//    U: Clone,
+//    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output> + Send,
+//{
+//    // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
+//    // n is the width of A
+//    // (m * n) mul (n * p) = (m * p) matrix
+//    let mut out = Mutex::new(Vec::from_fn(m * p, |_| None));
+//    thread::scope(|x| {
+//        let lhs = &lhs;
+//        let rhs = &rhs;
+//        let out = &out;
+//        for i in 0..m {
+//            x.spawn(move || {
+//                for j in 0..p {
+//                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
+//                    for k in 1..n {
+//                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
+//                    }
+//                    if let Some(elem) = out.lock().unwrap().get_mut(i * p + j) {
+//                        *elem = Some(sum);
+//                    }
+//                }
+//            });
+//        }
+//    });
+//    let x = out.into_inner().unwrap();
+//    let x: Vec<_> = x.into_iter().map(|x| x.unwrap()).collect();
+//    x.into()
+//}
 fn matrix_mul<T, U>(
-    lhs: impl WidthGetCloned<T>,
-    rhs: impl WidthGetCloned<U>,
+    lhs: impl WidthGetCloned<T> + Sync,
+    rhs: impl WidthGetCloned<U> + Sync,
     m: usize,
     n: usize,
     p: usize,
@@ -1005,49 +1073,39 @@ where
     T: Mul<U>,
     T: Clone,
     U: Clone,
-    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output>,
+    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
 {
     // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
     // n is the width of A
     // (m * n) mul (n * p) = (m * p) matrix
-    let mut out = Vec::with_capacity(m * p);
-    for i in 0..m {
-        for j in 0..p {
-            //let mut sum = lhs[i * n + 0].clone() * rhs[0 * n + j].clone();
-            let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
-            for k in 1..n {
-                sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
-            }
-            out.push(sum);
+    let (sender, reciever) = std::sync::mpsc::channel();
+    thread::scope(|x| {
+        let lhs = &lhs;
+        let rhs = &rhs;
+        let sender = &sender;
+        for i in 0..m {
+            x.spawn(move || {
+                for j in 0..p {
+                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
+                    for k in 1..n {
+                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
+                    }
+                    sender.send((sum, i, j)).unwrap();
+                }
+            });
+        }
+    });
+    drop(sender);
+    let mut out = Vec::from_fn(m * p, |_| None);
+    for (sum, i, j) in reciever {
+        if let Some(elem) = out.get_mut(i * p + j) {
+            *elem = Some(sum);
         }
     }
+    let out: Vec<_> = out.into_iter().map(|x| x.unwrap()).collect();
     out.into()
 }
-//fn matrix_map_a_b<T, U, V, F>(lhs: Box<[T]>, rhs: Box<[U]>, f: F) -> Box<[V]>
-//where
-//    F: Fn(T, U) -> V,
-//{
-//    let len = lhs.len();
-//    let lhs = lhs.into_iter();
-//    let rhs = rhs.into_iter();
-//    let mut out = Vec::with_capacity(len);
-//    for (x, y) in lhs.zip(rhs) {
-//        out.push(f(x, y));
-//    }
-//    out.into()
-//}
-//fn matrix_map_a_b<T, U, V>(lhs: Box<[T]>, rhs: Box<[U]>, f: impl Fn(T, U) -> V) -> Box<[V]>
-//{
-//    let len = lhs.len();
-//    let lhs = lhs.into_iter();
-//    let rhs = rhs.into_iter();
-//    let mut out = Vec::with_capacity(len);
-//    for (x, y) in lhs.zip(rhs) {
-//        out.push(f(x, y));
-//    }
-//    out.into()
-//}
-// Looks cool but wont work with the accessing strategy
+
 fn matrix_map_a_b<T, U, V>(
     lhs: impl WidthGetCloned<T>,
     rhs: impl WidthGetCloned<U>,
@@ -1065,28 +1123,19 @@ fn matrix_map_a_b<T, U, V>(
     }
     out.into()
 }
-//fn matrix_map_a_b_override_a<T, U, F>(mut lhs: Box<[T]>, rhs: Box<[U]>, f: F) -> Box<[T]>
-//where
-//    F: Fn(T, U) -> T,
-//{
-//    let mut rhs = rhs.into_iter();
-//    let lhs_ptr = lhs.as_ptr();
-//    for i in 0..lhs.len() {
-//        // SAFETY: intuitively it seems safe
-//        let lhs_val = unsafe { lhs_ptr.add(i).read() };
-//        lhs[i] = f(lhs_val, rhs.next().unwrap());
-//    }
-//    lhs
-//}
-fn matrix_map_a_b_override_a<T, U, Out>(mut lhs: Out, rhs: impl WidthGetCloned<U>, m: usize, n: usize, f: impl Fn(T, U) -> T) -> Out
+fn matrix_map_a_b_override_a<T, U, Out>(
+    mut lhs: Out,
+    rhs: impl WidthGetCloned<U>,
+    m: usize,
+    n: usize,
+    f: impl Fn(T, U) -> T,
+) -> Out
 where
     Out: WidthGetUnsafe<T> + WidthAssign<T>,
 {
     for i in 0..m {
         for j in 0..n {
-            let left = unsafe {
-                lhs.width_get_unsafe(i, n, j)
-            };
+            let left = unsafe { lhs.width_get_unsafe(i, n, j) };
             // SAFETY: idk
             let right = rhs.width_get_cloned(i, n, j);
             lhs.assign(f(left, right), i, n, j);
@@ -1094,13 +1143,12 @@ where
     }
     lhs
 }
-//fn matrix_sub<T, U>(lhs: Box<[T]>, rhs: Box<[U]>) -> Box<[<T as Sub<U>>::Output]>
-//where
-//    T: Sub<U>,
-//{
-//    matrix_map_a_b(lhs, rhs, |a, b| a - b)
-//}
-fn matrix_sub<T, U>(lhs: impl WidthGetCloned<T>, rhs: impl WidthGetCloned<U>, m: usize, n: usize) -> Box<[<T as Sub<U>>::Output]>
+fn matrix_sub<T, U>(
+    lhs: impl WidthGetCloned<T>,
+    rhs: impl WidthGetCloned<U>,
+    m: usize,
+    n: usize,
+) -> Box<[<T as Sub<U>>::Output]>
 where
     T: Sub<U>,
 {
@@ -1124,96 +1172,34 @@ where
 
 type AddOut<T, U> = <T as Add<U>>::Output;
 
-// lets you add an m * n matrix to a m * 1 matrix by extending it to width n
-// lhs is the m * n matrix, rhs is the m * 1 matrix
-//fn add_extended<T, U>(
-//    lhs: impl AsRef<[T]>,
-//    rhs: impl AsRef<[U]>,
-//    m: usize,
-//    n: usize,
-//) -> Box<[AddOut<T, U>]>
-//where
-//    T: Add<U>,
-//    T: Clone,
-//    U: Clone,
-//{
-//    let lhs = lhs.as_ref();
-//    let rhs = rhs.as_ref();
-//    assert!(rhs.len() == m);
-//    assert_eq!(lhs.len(), m * n);
-//    let mut out = Vec::with_capacity(m * n); /* the output matrix */
-//    for i in 0..m {
-//        for j in 0..n {
-//            let left = get_cloned(lhs, n, i, j);
-//            //let number = lhs[i * n + j].clone() + rhs[i].clone();
-//            let number = left + rhs[i].clone();
-//            out.push(number);
-//        }
-//    }
-//    out.into()
-//}
-fn add_extended<T, U>(
+fn map_extended<T, U, V>(
     lhs: impl WidthGetCloned<T>,
     rhs: impl AsRef<[U]>,
     m: usize,
     n: usize,
-) -> Box<[AddOut<T, U>]>
+    f: impl Fn(T, U) -> V,
+) -> Box<[V]>
 where
-    T: Add<U>,
-    T: Clone,
     U: Clone,
 {
-    //let lhs = lhs.as_ref();
     let rhs = rhs.as_ref();
     assert!(rhs.len() == m);
-    //assert_eq!(lhs.len(), m * n);
     let mut out = Vec::with_capacity(m * n); /* the output matrix */
     for i in 0..m {
         for j in 0..n {
             let left = lhs.width_get_cloned(i, n, j);
-            //let left = get_cloned(lhs, n, i, j);
-            //let number = lhs[i * n + j].clone() + rhs[i].clone();
-            let number = left + rhs[i].clone();
+            let number = f(left, rhs[i].clone());
             out.push(number);
         }
     }
     out.into()
 }
 
-// lhs is a m * n matrix
-// rhs is a m * 1 matrix
-// rhs elements are cloned
-//fn map_extended_self<T, U, F>(
-//    mut lhs: Box<[T]>,
-//    rhs: Box<[U]>,
-//    m: usize,
-//    n: usize,
-//    f: F,
-//) -> Box<[T]>
-//where
-//    F: Fn(T, U) -> T,
-//    U: Clone,
-//{
-//    let lhs_ptr = lhs.as_ptr();
-//    for i in 0..m {
-//        for j in 0..n {
-//            let lhs_val = unsafe { lhs_ptr.add(i * n + j).read() };
-//            lhs[i * n + j] = f(lhs_val, rhs[i].clone());
-//        }
-//    }
-//    lhs
-//}
-fn map_extended_self<T, U, F, Out>(
-    mut lhs: Out,
-    rhs: &[U],
-    m: usize,
-    n: usize,
-    f: F,
-) -> Out
+fn map_extended_self<T, U, F, Out>(mut lhs: Out, rhs: &[U], m: usize, n: usize, f: F) -> Out
 where
     F: Fn(T, U) -> T,
     U: Clone,
-    Out: WidthGetUnsafe<T> + WidthAssign<T>
+    Out: WidthGetUnsafe<T> + WidthAssign<T>,
 {
     for i in 0..m {
         for j in 0..n {
@@ -1224,18 +1210,19 @@ where
     lhs
 }
 
-//fn get_cloned<T>(x: impl AsRef<[T]>, n: usize, i: usize, j: usize) -> T
-//where
-//    T: Clone,
-//{
-//    let x = x.as_ref();
-//    x.get(i * n + j).unwrap().clone()
-//}
-
-#[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
+#[derive(PartialEq, PartialOrd, Clone, Copy)]
 #[repr(transparent)]
 struct Nan<T: FloatCore> {
     inner: NotNan<T>,
+}
+
+impl<T> Debug for Nan<T>
+where
+    T: Debug + Clone + FloatCore,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.inner.clone().into_inner())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1251,12 +1238,6 @@ pub struct BorrowedMat<'a, T> {
     height: usize,
     transposed: bool,
 }
-
-//impl<'a, T: Clone> From<BorrowedMat<'a, T>> for Matrix<T> {
-//    fn from(value: BorrowedMat<'a, T>) -> Self {
-//        value.clone_to_matrix()
-//    }
-//}
 
 impl<T> AsMat<T> for &Matrix<T> {
     fn as_mat<'a>(&'a self) -> BorrowedMat<'a, T> {
@@ -1350,8 +1331,9 @@ impl<T> WidthGetUnsafe<T> for Box<[T]> {
         unsafe { ptr.add(i * n + j).read() }
     }
 }
-impl<T> WidthGetCloned<T> for Box<[T]> 
-where T: Clone
+impl<T> WidthGetCloned<T> for Box<[T]>
+where
+    T: Clone,
 {
     #[inline(always)]
     fn width_get_cloned(&self, i: usize, n: usize, j: usize) -> T {
@@ -1364,8 +1346,16 @@ impl<T, U: AsMat<T>> GetUnsafe<T> for U {
             swap(&mut i, &mut j);
         }
         let ptr = self.data().as_ptr();
-        //unsafe { ptr.add(i * self.width() + j).read() }
         unsafe { ptr.add(i * self.data_width() + j).read() }
+    }
+}
+
+impl<'a, T> WidthGetCloned<T> for BorrowedMat<'a, T>
+where
+    T: Clone,
+{
+    fn width_get_cloned(&self, i: usize, _n: usize, j: usize) -> T {
+        self.get_owned(i, j)
     }
 }
 
@@ -1377,6 +1367,11 @@ impl From<u16> for Nan<f32> {
 impl From<usize> for Nan<f32> {
     fn from(value: usize) -> Self {
         not_nan(value as f32)
+    }
+}
+impl From<Nan<f32>> for usize {
+    fn from(value: Nan<f32>) -> Self {
+        value.into_inner() as usize
     }
 }
 
