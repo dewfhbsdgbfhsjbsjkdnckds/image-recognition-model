@@ -7,7 +7,7 @@
 #![feature(unboxed_closures)]
 
 use std::{
-    any::TypeId, array::{self, TryFromSliceError}, borrow::Borrow, convert::identity, error::Error, fmt::{Debug, Display}, fs::File, io::{Cursor, Read}, mem::{self, ManuallyDrop, MaybeUninit, swap}, ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}, ptr::NonNull, slice, time,
+    any::TypeId, array::{self, TryFromSliceError}, borrow::Borrow, convert::identity, error::Error, fmt::{Debug, Display}, fs::File, io::{Cursor, Read}, mem::{self, MaybeUninit, swap}, ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}, ptr::NonNull, slice, time,
 };
 
 // might be useful? idk lol
@@ -253,20 +253,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let activation = |x: NonNanType| one / (one + (-x).exp());
     let del_activation = |x| activation(x) * (one - activation(x));
     let del_cost = |_, a: Matrix<_>, y| a.sub_self(y);
-    for epoch in 0..1 {
+    for epoch in 0..10 {
         println!("starting epoch {epoch}");
         // classification and images seem to be okay
         network.run_epoch(
             &images,
             &classification,
             minibatch_size,
-            image_shape,
-            10,
             activation,
             del_cost,
             del_activation,
-            not_nan(0.4),
-            not_nan(5.0),
+            not_nan(0.25),
+            not_nan(1000.0),
             training_set_size.into(),
         );
     }
@@ -508,6 +506,7 @@ where
                 // need to be multiplied by a 1 * p matrix, another vector
                 let delta_l = delta.get_owned(x, layer); // infinite?
                 //weights_sum = weights_sum + (delta_l * a);
+                //println!("{}", delta_l.height() * a.width());
                 weights_sum = weights_sum.add_self(delta_l * a);
                 //biases_sum = biases_sum + delta.get_owned(x, layer);
                 biases_sum = biases_sum.add_self(delta.get_owned(x, layer));
@@ -532,8 +531,8 @@ where
         train_y: &[T],
         // these two are implicitly part of layout_heights
         minibatch_size: usize,
-        input_height: usize,
-        y_height: usize,
+        //input_height: usize,
+        //y_height: usize,
         activation_fn: impl Fn(T) -> T,
         del_cost: impl Fn(Matrix<T>, Matrix<T>, Matrix<T>) -> Matrix<T>,
         del_activation_fn: impl Fn(T) -> T,
@@ -544,6 +543,8 @@ where
         T: Clone + Mul<Output = T> + Add<Output = T> + Scalar,
         T: From<u16>,
     {
+        let input_height = *self._layout_heights.first().unwrap();
+        let y_height = *self._layout_heights.last().unwrap();
         for (train_data, train_y) in train_data
             .chunks(minibatch_size * input_height)
             .zip(train_y.chunks(minibatch_size * y_height))
@@ -606,7 +607,8 @@ where
 }
 impl<T, U> Add<Matrix<U>> for Matrix<T>
 where
-    T: Add<U>,
+    T: Add<U> + Clone,
+    U: Clone,
 {
     type Output = Matrix<<T as Add<U>>::Output>;
     fn add(self, rhs: Matrix<U>) -> Self::Output {
@@ -816,7 +818,7 @@ pub trait AsMat<T> {
 impl<T> Matrix<T> {
     pub fn add_self(self, rhs: Self) -> Self
     where
-        T: Add<Output = T>,
+        T: Add<Output = T> + Clone,
     {
         assert_eq!(self.shape(), rhs.shape());
         let height = self.height();
@@ -828,7 +830,7 @@ impl<T> Matrix<T> {
     }
     pub fn sub_self(self, rhs: Self) -> Self
     where
-        T: Sub<Output = T>,
+        T: Sub<Output = T> + Clone,
     {
         assert_eq!(self.shape(), rhs.shape());
         let height = self.height();
@@ -916,7 +918,7 @@ impl<T> Matrix<T> {
     }
     pub fn hadamard_self(self, rhs: Self) -> Self
     where
-        T: Mul<Output = T>,
+        T: Mul<Output = T> + Clone,
     {
         assert_eq!(
             self.height(),
@@ -932,7 +934,8 @@ impl<T> Matrix<T> {
     }
     pub fn hadamard<U>(self, rhs: Matrix<U>) -> Matrix<<T as Mul<U>>::Output>
     where
-        T: Mul<U>,
+        T: Mul<U> + Clone,
+        U: Clone,
     {
         assert_eq!(
             self.height(),
@@ -1046,8 +1049,8 @@ where
 //}
 // Looks cool but wont work with the accessing strategy
 fn matrix_map_a_b<T, U, V>(
-    lhs: impl WidthGetUnsafe<T>,
-    rhs: impl WidthGetUnsafe<U>,
+    lhs: impl WidthGetCloned<T>,
+    rhs: impl WidthGetCloned<U>,
     m: usize,
     n: usize,
     f: impl Fn(T, U) -> V,
@@ -1055,13 +1058,11 @@ fn matrix_map_a_b<T, U, V>(
     let mut out = Vec::with_capacity(n * m);
     for i in 0..m {
         for j in 0..n {
-            let left = unsafe { lhs.width_get_unsafe(i, n, j) };
-            let right = unsafe { rhs.width_get_unsafe(i, n, j) };
+            let left = lhs.width_get_cloned(i, n, j);
+            let right = rhs.width_get_cloned(i, n, j);
             out.push(f(left, right));
         }
     }
-    let _ = ManuallyDrop::new(lhs);
-    let _ = ManuallyDrop::new(rhs);
     out.into()
 }
 //fn matrix_map_a_b_override_a<T, U, F>(mut lhs: Box<[T]>, rhs: Box<[U]>, f: F) -> Box<[T]>
@@ -1077,7 +1078,7 @@ fn matrix_map_a_b<T, U, V>(
 //    }
 //    lhs
 //}
-fn matrix_map_a_b_override_a<T, U, Out>(mut lhs: Out, rhs: impl WidthGetUnsafe<U>, m: usize, n: usize, f: impl Fn(T, U) -> T) -> Out
+fn matrix_map_a_b_override_a<T, U, Out>(mut lhs: Out, rhs: impl WidthGetCloned<U>, m: usize, n: usize, f: impl Fn(T, U) -> T) -> Out
 where
     Out: WidthGetUnsafe<T> + WidthAssign<T>,
 {
@@ -1087,11 +1088,10 @@ where
                 lhs.width_get_unsafe(i, n, j)
             };
             // SAFETY: idk
-            let right = unsafe { rhs.width_get_unsafe(i, n, j) };
+            let right = rhs.width_get_cloned(i, n, j);
             lhs.assign(f(left, right), i, n, j);
         }
     }
-    let _ = ManuallyDrop::new(rhs);
     lhs
 }
 //fn matrix_sub<T, U>(lhs: Box<[T]>, rhs: Box<[U]>) -> Box<[<T as Sub<U>>::Output]>
@@ -1100,7 +1100,7 @@ where
 //{
 //    matrix_map_a_b(lhs, rhs, |a, b| a - b)
 //}
-fn matrix_sub<T, U>(lhs: impl WidthGetUnsafe<T>, rhs: impl WidthGetUnsafe<U>, m: usize, n: usize) -> Box<[<T as Sub<U>>::Output]>
+fn matrix_sub<T, U>(lhs: impl WidthGetCloned<T>, rhs: impl WidthGetCloned<U>, m: usize, n: usize) -> Box<[<T as Sub<U>>::Output]>
 where
     T: Sub<U>,
 {
@@ -1108,7 +1108,8 @@ where
 }
 impl<T, U> Sub<Matrix<U>> for Matrix<T>
 where
-    T: Sub<U>,
+    T: Sub<U> + Clone,
+    U: Clone,
 {
     type Output = Matrix<<T as Sub<U>>::Output>;
     fn sub(self, rhs: Matrix<U>) -> Self::Output {
