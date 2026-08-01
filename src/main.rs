@@ -1062,6 +1062,49 @@ impl<T> Matrix<T> {
 //    let x: Vec<_> = x.into_iter().map(|x| x.unwrap()).collect();
 //    x.into()
 //}
+//fn matrix_mul<T, U>(
+//    lhs: impl WidthGetCloned<T> + Sync,
+//    rhs: impl WidthGetCloned<U> + Sync,
+//    m: usize,
+//    n: usize,
+//    p: usize,
+//) -> Box<[MulOut<T, U>]>
+//where
+//    T: Mul<U>,
+//    T: Clone,
+//    U: Clone,
+//    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
+//{
+//    // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
+//    // n is the width of A
+//    // (m * n) mul (n * p) = (m * p) matrix
+//    let (sender, reciever) = std::sync::mpsc::channel();
+//    thread::scope(|x| {
+//        let lhs = &lhs;
+//        let rhs = &rhs;
+//        let sender = &sender;
+//        for i in 0..m {
+//            x.spawn(move || {
+//                for j in 0..p {
+//                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
+//                    for k in 1..n {
+//                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
+//                    }
+//                    sender.send((sum, i, j)).unwrap();
+//                }
+//            });
+//        }
+//    });
+//    drop(sender);
+//    let mut out = Vec::from_fn(m * p, |_| None);
+//    for (sum, i, j) in reciever {
+//        if let Some(elem) = out.get_mut(i * p + j) {
+//            *elem = Some(sum);
+//        }
+//    }
+//    let out: Vec<_> = out.into_iter().map(|x| x.unwrap()).collect();
+//    out.into()
+//}
 fn matrix_mul<T, U>(
     lhs: impl WidthGetCloned<T> + Sync,
     rhs: impl WidthGetCloned<U> + Sync,
@@ -1078,30 +1121,24 @@ where
     // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
     // n is the width of A
     // (m * n) mul (n * p) = (m * p) matrix
-    let (sender, reciever) = std::sync::mpsc::channel();
+    let mut out = Vec::from_fn(m * p, |_| None);
+    let mut chunks = out.chunks_mut(p);
     thread::scope(|x| {
         let lhs = &lhs;
         let rhs = &rhs;
-        let sender = &sender;
         for i in 0..m {
+            let chunk = chunks.next().unwrap();
             x.spawn(move || {
                 for j in 0..p {
                     let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
                     for k in 1..n {
                         sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
                     }
-                    sender.send((sum, i, j)).unwrap();
+                    chunk[j] = Some(sum);
                 }
             });
         }
     });
-    drop(sender);
-    let mut out = Vec::from_fn(m * p, |_| None);
-    for (sum, i, j) in reciever {
-        if let Some(elem) = out.get_mut(i * p + j) {
-            *elem = Some(sum);
-        }
-    }
     let out: Vec<_> = out.into_iter().map(|x| x.unwrap()).collect();
     out.into()
 }
