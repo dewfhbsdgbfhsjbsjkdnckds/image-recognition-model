@@ -7,8 +7,24 @@
 #![allow(incomplete_features)]
 #![feature(unboxed_closures)]
 
+
+// TODO make threadpool
+
 use std::{
-    any::TypeId, array::{self, TryFromSliceError}, borrow::Borrow, convert::identity, error::Error, fmt::{Debug, Display}, fs::File, io::{Cursor, Read}, mem::{self, MaybeUninit, swap}, ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}, ptr::NonNull, slice, sync::Mutex, thread, time,
+    any::TypeId,
+    array::{self, TryFromSliceError},
+    borrow::Borrow,
+    convert::identity,
+    error::Error,
+    fmt::{Debug, Display},
+    fs::File,
+    io::{Cursor, Read},
+    mem::{self, MaybeUninit, swap},
+    ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+    ptr::NonNull,
+    slice,
+    sync::Mutex,
+    thread, time,
 };
 
 // might be useful? idk lol
@@ -26,6 +42,7 @@ use std::{
 
 use ordered_float::{FloatCore, NotNan};
 use rand_distr::{Distribution, Normal, num_traits};
+use threadpool::ThreadPool;
 
 // rows is height
 // cols is width
@@ -210,11 +227,13 @@ fn not_nan<T: FloatCore>(x: T) -> Nan<T> {
 }
 type ScalarType = f32;
 type NonNanType = Nan<ScalarType>;
+static THREADPOOL: ThreadPool = ThreadPool::init();
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    THREADPOOL.add_threads(20);
     let start = time::Instant::now();
-    let mut file = File::open("train-labels.idx1-ubyte")?;
+    let mut file = File::open("/home/gfjnf/programming/machine_learning/train-labels.idx1-ubyte")?;
     let label_data = MnistData::new(&mut file)?;
-    let images_data = MnistData::new(&mut File::open("train-images.idx3-ubyte")?)?;
+    let images_data = MnistData::new(&mut File::open("/home/gfjnf/programming/machine_learning/train-images.idx3-ubyte")?)?;
     let image_shape = (images_data.sizes[1] * images_data.sizes[2]) as usize;
 
     let images = meow(images_data, |x| {
@@ -255,8 +274,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let del_activation = |x| activation(x) * (one - activation(x));
     let del_cost = |_, a: Matrix<_>, y| a.sub_self(y);
 
-    let test_images_data = MnistData::new(&mut File::open("t10k-images.idx3-ubyte")?)?;
-    let test_labels = MnistData::new(&mut File::open("t10k-labels.idx1-ubyte")?)?;
+    let test_images_data = MnistData::new(&mut File::open("/home/gfjnf/programming/machine_learning/t10k-images.idx3-ubyte")?)?;
+    let test_labels = MnistData::new(&mut File::open("/home/gfjnf/programming/machine_learning/t10k-labels.idx1-ubyte")?)?;
     let x = meow(test_images_data, |x| {
         not_nan(Into::<ScalarType>::into(x) / 255.0)
     });
@@ -271,7 +290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut no_improvement_in_counter = 0;
     let mut learning_rate = not_nan(0.25);
     let initial_learning_rate = learning_rate;
-    for epoch in 0..1 {
+    for epoch in 0..0 {
         println!("starting epoch {epoch}");
         // classification and images seem to be okay
         network.run_epoch(
@@ -306,7 +325,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if no_improvement_in_counter >= 1 {
             learning_rate = learning_rate / not_nan(10.0);
         }
-        if learning_rate < initial_learning_rate / not_nan(20000.0) 
+        if learning_rate < initial_learning_rate / not_nan(20000.0)
             || no_improvement_in_counter == 10
         {
             break;
@@ -319,31 +338,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // report that as a percentage
     //let
     //assert_eq!(test_images.width(), test_labels.data.len());
-    //network.feed_forward(&test_images, activation);
-    //let (a, _) = network.feed_forward_results();
-    //let y_hat = a.last().unwrap();
-    //let mut correct_count = 0;
-    //for j in 0..y_hat.width() {
-    //    let mut max = y_hat.get_owned(0, j);
-    //    let mut max_index = 0;
-    //    for i in 1..10 {
-    //        let x = y_hat.get_owned(i, j);
-    //        if x > max {
-    //            max = x;
-    //            max_index = i;
-    //        }
-    //    }
-    //    if max_index == test_labels.data[j] as usize {
-    //        correct_count += 1;
-    //    }
-    //}
-    //let correct_ratio = correct_count as f64 / height as f64;
-    //println!("correct percentage: {}%", correct_ratio * 100.0);
-    //println!("correct count: {}", correct_count);
+    if true {
+        for _ in 0..100 {
+            network.feed_forward(&test_images, activation);
+            let (a, _) = network.feed_forward_results();
+            let y_hat = a.last().unwrap();
+            let mut correct_count = 0;
+            for j in 0..y_hat.width() {
+                let mut max = y_hat.get_owned(0, j);
+                let mut max_index = 0;
+                for i in 1..10 {
+                    let x = y_hat.get_owned(i, j);
+                    if x > max {
+                        max = x;
+                        max_index = i;
+                    }
+                }
+                if max_index == test_labels.data[j] as usize {
+                    correct_count += 1;
+                }
+            }
+            let correct_ratio = correct_count as f64 / height as f64;
+        }
+        //println!("correct percentage: {}%", correct_ratio * 100.0);
+        //println!("correct count: {}", correct_count);
+    }
 
     let end = time::Instant::now();
     let diff = end - start;
-    println!("time taken: {}s", diff.as_secs_f32());
+    println!("time taken: {}m, {}s", diff.as_secs() / 60, diff.as_secs());
     Ok(())
 }
 
@@ -471,7 +494,7 @@ where
         (layers_a.as_array().unwrap(), layers_z.as_array().unwrap())
     }
     //#[allow(non_snake_case)]
-    pub fn back_prop<'a>(
+    pub fn back_prop(
         &self,
         y_hat: impl AsMat<T>,
         z: &[Matrix<T>; LAYER_COUNT - 1],
@@ -499,7 +522,8 @@ where
             let mut range = (0..LAYER_COUNT - 1).rev();
             let successors = core::iter::successors(range.next().map(|i| (i, layer_delta)), |x| {
                 let i = range.next()?;
-                let z = z[i].clone();
+                //let z = z[i].clone();
+                let z = z[i].get_column(sample);
                 let w = &self.weights[i + 1].transpose_clone();
                 //let layer_delta = (w * &x.1).hadamard(z.map(&del_activation_fn));
                 //let layer_delta = (w * &x.1).hadamard_self(z.map(&del_activation_fn));
@@ -962,6 +986,8 @@ impl<T> Matrix<T> {
     where
         T: Mul<Output = T> + Clone,
     {
+        assert_eq!(self.width(), 1, "hadamard only works on vectors");
+        assert_eq!(rhs.width(), 1, "hadamard only works on vectors");
         assert_eq!(
             self.height(),
             rhs.height(),
@@ -1121,9 +1147,64 @@ where
     // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
     // n is the width of A
     // (m * n) mul (n * p) = (m * p) matrix
-    let mut out = Vec::from_fn(m * p, |_| None);
+    //if m > 10 {
+    matrix_mul_parallel(lhs, rhs, m, n, p)
+    //}
+    //else {
+    //matrix_mul_singlethreaded(lhs, rhs, m, n, p)
+    //}
+}
+//fn matrix_mul_parallel<T, U>(
+//    lhs: impl WidthGetCloned<T> + Sync,
+//    rhs: impl WidthGetCloned<U> + Sync,
+//    m: usize,
+//    n: usize,
+//    p: usize,
+//) -> Box<[MulOut<T, U>]>
+//where
+//    T: Mul<U>,
+//    T: Clone,
+//    U: Clone,
+//    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
+//{
+//    let mut out = Vec::from_fn(m * p, |_| None);
+//    let mut chunks = out.chunks_mut(p);
+//    thread::scope(|x| {
+//        let lhs = &lhs;
+//        let rhs = &rhs;
+//        for i in 0..m {
+//            let chunk = chunks.next().unwrap();
+//            x.spawn(move || {
+//                for j in 0..p {
+//                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
+//                    for k in 1..n {
+//                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
+//                    }
+//                    chunk[j] = Some(sum);
+//                }
+//            });
+//        }
+//    });
+//    let out: Vec<_> = out.into_iter().map(|x| x.unwrap()).collect();
+//    out.into()
+//}
+fn matrix_mul_parallel<T, U>(
+    lhs: impl WidthGetCloned<T> + Sync,
+    rhs: impl WidthGetCloned<U> + Sync,
+    m: usize,
+    n: usize,
+    p: usize,
+) -> Box<[MulOut<T, U>]>
+where
+    T: Mul<U>,
+    T: Clone,
+    U: Clone,
+    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
+{
+    println!("start of matrix mul");
+    let mut out = Vec::from_fn(m * p, |_| MaybeUninit::uninit());
     let mut chunks = out.chunks_mut(p);
-    thread::scope(|x| {
+    THREADPOOL.scope(|x| {
         let lhs = &lhs;
         let rhs = &rhs;
         for i in 0..m {
@@ -1134,12 +1215,38 @@ where
                     for k in 1..n {
                         sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
                     }
-                    chunk[j] = Some(sum);
+                    chunk[j] = MaybeUninit::new(sum);
                 }
             });
         }
     });
-    let out: Vec<_> = out.into_iter().map(|x| x.unwrap()).collect();
+    println!("end of matrix mul");
+    let out: Box<[_]> = out.into();
+    unsafe { out.assume_init() }
+}
+fn matrix_mul_singlethreaded<T, U>(
+    lhs: impl WidthGetCloned<T>,
+    rhs: impl WidthGetCloned<U>,
+    m: usize,
+    n: usize,
+    p: usize,
+) -> Box<[MulOut<T, U>]>
+where
+    T: Mul<U>,
+    T: Clone,
+    U: Clone,
+    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output>,
+{
+    let mut out = Vec::with_capacity(m * p);
+    for i in 0..m {
+        for j in 0..p {
+            let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
+            for k in 1..n {
+                sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
+            }
+            out.push(sum);
+        }
+    }
     out.into()
 }
 
