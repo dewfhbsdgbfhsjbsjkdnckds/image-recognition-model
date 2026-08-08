@@ -7,24 +7,10 @@
 #![allow(incomplete_features)]
 #![feature(unboxed_closures)]
 
-
 // TODO make threadpool
 
 use std::{
-    any::TypeId,
-    array::{self, TryFromSliceError},
-    borrow::Borrow,
-    convert::identity,
-    error::Error,
-    fmt::{Debug, Display},
-    fs::File,
-    io::{Cursor, Read},
-    mem::{self, MaybeUninit, swap},
-    ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
-    ptr::NonNull,
-    slice,
-    sync::Mutex,
-    thread, time,
+    any::TypeId, array::{self, TryFromSliceError}, borrow::Borrow, convert::identity, error::Error, fmt::{Debug, Display}, fs::File, io::{Cursor, Read}, mem::{self, MaybeUninit, swap}, ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}, ptr::NonNull, slice, sync::{Mutex, atomic::Ordering}, thread, time,
 };
 
 // might be useful? idk lol
@@ -227,13 +213,13 @@ fn not_nan<T: FloatCore>(x: T) -> Nan<T> {
 }
 type ScalarType = f32;
 type NonNanType = Nan<ScalarType>;
-static THREADPOOL: ThreadPool = ThreadPool::init();
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    THREADPOOL.add_threads(20);
     let start = time::Instant::now();
     let mut file = File::open("/home/gfjnf/programming/machine_learning/train-labels.idx1-ubyte")?;
     let label_data = MnistData::new(&mut file)?;
-    let images_data = MnistData::new(&mut File::open("/home/gfjnf/programming/machine_learning/train-images.idx3-ubyte")?)?;
+    let images_data = MnistData::new(&mut File::open(
+        "/home/gfjnf/programming/machine_learning/train-images.idx3-ubyte",
+    )?)?;
     let image_shape = (images_data.sizes[1] * images_data.sizes[2]) as usize;
 
     let images = meow(images_data, |x| {
@@ -274,8 +260,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let del_activation = |x| activation(x) * (one - activation(x));
     let del_cost = |_, a: Matrix<_>, y| a.sub_self(y);
 
-    let test_images_data = MnistData::new(&mut File::open("/home/gfjnf/programming/machine_learning/t10k-images.idx3-ubyte")?)?;
-    let test_labels = MnistData::new(&mut File::open("/home/gfjnf/programming/machine_learning/t10k-labels.idx1-ubyte")?)?;
+    let test_images_data = MnistData::new(&mut File::open(
+        "/home/gfjnf/programming/machine_learning/t10k-images.idx3-ubyte",
+    )?)?;
+    let test_labels = MnistData::new(&mut File::open(
+        "/home/gfjnf/programming/machine_learning/t10k-labels.idx1-ubyte",
+    )?)?;
     let x = meow(test_images_data, |x| {
         not_nan(Into::<ScalarType>::into(x) / 255.0)
     });
@@ -290,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut no_improvement_in_counter = 0;
     let mut learning_rate = not_nan(0.25);
     let initial_learning_rate = learning_rate;
-    for epoch in 0..0 {
+    for epoch in 0..1 {
         println!("starting epoch {epoch}");
         // classification and images seem to be okay
         network.run_epoch(
@@ -338,7 +328,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // report that as a percentage
     //let
     //assert_eq!(test_images.width(), test_labels.data.len());
-    if true {
+    if false {
         for _ in 0..100 {
             network.feed_forward(&test_images, activation);
             let (a, _) = network.feed_forward_results();
@@ -1020,117 +1010,6 @@ impl<T> Matrix<T> {
     }
 }
 
-// i think this implementation is fiiine for now
-//fn matrix_mul<T, U>(
-//    lhs: impl WidthGetCloned<T>,
-//    rhs: impl WidthGetCloned<U>,
-//    m: usize,
-//    n: usize,
-//    p: usize,
-//) -> Box<[MulOut<T, U>]>
-//where
-//    T: Mul<U>,
-//    T: Clone,
-//    U: Clone,
-//    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output>,
-//{
-//    // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
-//    // n is the width of A
-//    // (m * n) mul (n * p) = (m * p) matrix
-//    let mut out = Vec::with_capacity(m * p);
-//    for i in 0..m {
-//        for j in 0..p {
-//            let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
-//            for k in 1..n {
-//                sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
-//            }
-//            out.push(sum);
-//        }
-//    }
-//    out.into()
-//}
-//fn matrix_mul<T, U>(
-//    lhs: impl WidthGetCloned<T> + Sync,
-//    rhs: impl WidthGetCloned<U> + Sync,
-//    m: usize,
-//    n: usize,
-//    p: usize,
-//) -> Box<[MulOut<T, U>]>
-//where
-//    T: Mul<U>,
-//    T: Clone,
-//    U: Clone,
-//    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output> + Send,
-//{
-//    // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
-//    // n is the width of A
-//    // (m * n) mul (n * p) = (m * p) matrix
-//    let mut out = Mutex::new(Vec::from_fn(m * p, |_| None));
-//    thread::scope(|x| {
-//        let lhs = &lhs;
-//        let rhs = &rhs;
-//        let out = &out;
-//        for i in 0..m {
-//            x.spawn(move || {
-//                for j in 0..p {
-//                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
-//                    for k in 1..n {
-//                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
-//                    }
-//                    if let Some(elem) = out.lock().unwrap().get_mut(i * p + j) {
-//                        *elem = Some(sum);
-//                    }
-//                }
-//            });
-//        }
-//    });
-//    let x = out.into_inner().unwrap();
-//    let x: Vec<_> = x.into_iter().map(|x| x.unwrap()).collect();
-//    x.into()
-//}
-//fn matrix_mul<T, U>(
-//    lhs: impl WidthGetCloned<T> + Sync,
-//    rhs: impl WidthGetCloned<U> + Sync,
-//    m: usize,
-//    n: usize,
-//    p: usize,
-//) -> Box<[MulOut<T, U>]>
-//where
-//    T: Mul<U>,
-//    T: Clone,
-//    U: Clone,
-//    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
-//{
-//    // c[i][j] = a[i][0] b[0][j] + a[i][1] b[1][j] + ... + a[i][n] b[n][j]
-//    // n is the width of A
-//    // (m * n) mul (n * p) = (m * p) matrix
-//    let (sender, reciever) = std::sync::mpsc::channel();
-//    thread::scope(|x| {
-//        let lhs = &lhs;
-//        let rhs = &rhs;
-//        let sender = &sender;
-//        for i in 0..m {
-//            x.spawn(move || {
-//                for j in 0..p {
-//                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
-//                    for k in 1..n {
-//                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
-//                    }
-//                    sender.send((sum, i, j)).unwrap();
-//                }
-//            });
-//        }
-//    });
-//    drop(sender);
-//    let mut out = Vec::from_fn(m * p, |_| None);
-//    for (sum, i, j) in reciever {
-//        if let Some(elem) = out.get_mut(i * p + j) {
-//            *elem = Some(sum);
-//        }
-//    }
-//    let out: Vec<_> = out.into_iter().map(|x| x.unwrap()).collect();
-//    out.into()
-//}
 fn matrix_mul<T, U>(
     lhs: impl WidthGetCloned<T> + Sync,
     rhs: impl WidthGetCloned<U> + Sync,
@@ -1148,10 +1027,10 @@ where
     // n is the width of A
     // (m * n) mul (n * p) = (m * p) matrix
     //if m > 10 {
-    matrix_mul_parallel(lhs, rhs, m, n, p)
+    //matrix_mul_parallel(lhs, rhs, m, n, p)
     //}
     //else {
-    //matrix_mul_singlethreaded(lhs, rhs, m, n, p)
+    matrix_mul_singlethreaded(lhs, rhs, m, n, p)
     //}
 }
 //fn matrix_mul_parallel<T, U>(
@@ -1167,9 +1046,10 @@ where
 //    U: Clone,
 //    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
 //{
-//    let mut out = Vec::from_fn(m * p, |_| None);
+//    let mut out = Vec::from_fn(m * p, |_| MaybeUninit::uninit());
 //    let mut chunks = out.chunks_mut(p);
-//    thread::scope(|x| {
+//    //println!("before threadpool scope");
+//    THREADPOOL.scope(|x| {
 //        let lhs = &lhs;
 //        let rhs = &rhs;
 //        for i in 0..m {
@@ -1180,50 +1060,14 @@ where
 //                    for k in 1..n {
 //                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
 //                    }
-//                    chunk[j] = Some(sum);
+//                    chunk[j] = MaybeUninit::new(sum);
 //                }
 //            });
 //        }
 //    });
-//    let out: Vec<_> = out.into_iter().map(|x| x.unwrap()).collect();
-//    out.into()
+//    let out: Box<[_]> = out.into();
+//    unsafe { out.assume_init() }
 //}
-fn matrix_mul_parallel<T, U>(
-    lhs: impl WidthGetCloned<T> + Sync,
-    rhs: impl WidthGetCloned<U> + Sync,
-    m: usize,
-    n: usize,
-    p: usize,
-) -> Box<[MulOut<T, U>]>
-where
-    T: Mul<U>,
-    T: Clone,
-    U: Clone,
-    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
-{
-    println!("start of matrix mul");
-    let mut out = Vec::from_fn(m * p, |_| MaybeUninit::uninit());
-    let mut chunks = out.chunks_mut(p);
-    THREADPOOL.scope(|x| {
-        let lhs = &lhs;
-        let rhs = &rhs;
-        for i in 0..m {
-            let chunk = chunks.next().unwrap();
-            x.spawn(move || {
-                for j in 0..p {
-                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
-                    for k in 1..n {
-                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
-                    }
-                    chunk[j] = MaybeUninit::new(sum);
-                }
-            });
-        }
-    });
-    println!("end of matrix mul");
-    let out: Box<[_]> = out.into();
-    unsafe { out.assume_init() }
-}
 fn matrix_mul_singlethreaded<T, U>(
     lhs: impl WidthGetCloned<T>,
     rhs: impl WidthGetCloned<U>,
@@ -1529,6 +1373,43 @@ impl Nan<f32> {
     //}
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+struct Alg<T>(T);
+impl Add for Alg<f32> {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
+        Alg(self.0.algebraic_add(rhs.0))
+    }
+}
+impl Sub for Alg<f32> {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self::Output {
+        Alg(self.0.algebraic_sub(rhs.0))
+    }
+}
+impl Mul for Alg<f32> {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self::Output {
+        Alg(self.0.algebraic_mul(rhs.0))
+    }
+}
+impl Div for Alg<f32> {
+    type Output = Self;
+    fn div(self, rhs: Self) -> Self::Output {
+        Alg(self.0.algebraic_div(rhs.0))
+    }
+}
+impl Neg for Alg<f32> {
+    type Output = Self;
+    fn neg(self) -> Self::Output {
+        Alg(-self.0)
+    }
+}
+impl Scalar for Alg<f32> {
+    const ONE: Self = Alg(1.0);
+    const ZERO: Self = Alg(0.0);
+}
+
 impl Scalar for Nan<f32> {
     const ONE: Self = Nan {
         inner: unsafe { NotNan::new_unchecked(1.0) },
@@ -1576,164 +1457,3 @@ impl<T: FloatCore> Neg for Nan<T> {
         Nan { inner: -self.inner }
     }
 }
-
-//impl<const INPUT_WIDTH: usize, const LAYER_COUNT: usize, T> Network<INPUT_WIDTH, LAYER_COUNT, T>
-//where
-//    [(); LAYER_COUNT - 1]:,
-//{
-//    pub fn new<F>(heights: [usize; LAYER_COUNT], mut randfn: F) -> Self
-//        where F: FnMut() -> T
-//    {
-//        let layers: [Box<[[Option<T>; INPUT_WIDTH]]>; LAYER_COUNT] = array::from_fn(|i| {
-//            let height = heights[i];
-//            let mut x = Vec::new();
-//            for j in 0..height {
-//                x.push(array::from_fn(|x| None));
-//            }
-//            x.into()
-//        });
-//        let biases: [Box<[T]>; LAYER_COUNT] = array::from_fn(|i| {
-//            let height = heights[i];
-//            let mut x = Vec::new();
-//            for j in 0..height {
-//                x.push(randfn());
-//            }
-//            x.into()
-//        });
-//        let weights: [Box<[Box<[T]>]>; LAYER_COUNT - 1] = array::from_fn(|i| {
-//            let height = heights[i + 1];
-//            let width = heights[i];
-//            // size of W[n] = height[n] * height[n - 1]
-//            // for programming (zero indexed)
-//            // size of W[n] = height[n + 1] * height[n]
-//            // size of W[1] = height[1] * height[0]
-//            let mut x = Vec::new();
-//            for j in 0..height {
-//                let mut y = Vec::new();
-//                for k in 0..width {
-//                    y.push(randfn());
-//                }
-//                x.push(y.into());
-//            }
-//            x.into()
-//        });
-//        let out = Self {
-//            layout_heights: heights,
-//            layers,
-//            biases,
-//            weights
-//        };
-//        out
-//    }
-//    pub fn feed_forward(input: &[[T; INPUT_WIDTH]]) -> Box<[[T; INPUT_WIDTH]]>{
-//        todo!()
-//    }
-//}
-
-// backprop code old, doesnt really work at all
-
-//let y_hat = model_out.last().unwrap().clone();
-//assert_eq!(y_hat.shape(), y.shape());
-//let m = y_hat.width();
-//let delC_delZ_L = (y_hat - y) * (<T as Scalar>::ONE / (m as u32).into());
-//let mut layer_delC_delZ = Box::new(delC_delZ_L);
-//let mut delC_delW_list = Vec::new();
-//let mut delC_delB_list = Vec::new();
-//for i in (0..LAYER_COUNT - 1).rev() {
-//    let layer_weights = &self.weights[i];
-//    //let layer_biases = &self.biases[i]; // i guess this isnt needed?
-//    let delC_delZ = layer_delC_delZ;
-
-//    /* calculate delC / delW for this layer */
-//    let delZ_delW = &model_out[i - 1].transpose_clone();
-//    let delC_delW = delC_delZ.as_ref() * delZ_delW;
-//    delC_delW_list.push(delC_delW);
-
-//    /* calculate delC / delB for this layer */
-//    // TODO turn this into a function
-//    // TODO i dont know if the maths here is correct
-//    let mut delC_delB = Vec::new();
-//    for i in 0..delC_delZ.height() {
-//        let mut sum = delC_delZ.get_owned(i, 0);
-//        for j in 1..delC_delZ.width() {
-//            sum = sum + delC_delZ.get_owned(i, j);
-//        }
-//        delC_delB.push(sum);
-//    }
-//    let delC_delB: Box<[T]> = delC_delB.into();
-//    let delC_delB = Matrix {
-//        data: delC_delB,
-//        height: delC_delZ.height(),
-//    };
-//    assert_eq!(delC_delB.width(), 1, "delC / delB must have a width of 1");
-//    assert_eq!(delC_delB.height(), self.biases[i].len(), "del C / del B must have the same height as Biases");
-//    delC_delB_list.push(delC_delB);
-
-//    /* calculate delC / delZ for the next layer */
-//    let delZ_delAsub1 = layer_weights.transpose_clone();
-//    let delC_delAsub1 = &delZ_delAsub1 * delC_delZ.as_ref();
-//    // this is the issue line lol
-//    //println!("{:?}", model_out[i - 1].clone().shape());
-//    //println!("{:?}", model_out[i - 1].clone().data.len());
-//    //let x = (-model_out[i - 1].clone() * <T as Scalar>::ONE);
-//    //println!("{:?}", x.shape());
-//    // has a shape of n[i - 1] * m
-//    let delAsub1_delZsub1 =
-//        model_out[i - 1].clone() * (-model_out[i - 1].clone() + <T as Scalar>::ONE).transpose();
-//    println!("gets here");
-//    let x = delC_delAsub1 * delAsub1_delZsub1;
-//    layer_delC_delZ = Box::new(x);
-
-//    //let next_delC_delZ =
-//    //let delC_delW = layer_delC_delZ *
-//}
-//(
-//    delC_delW_list.try_into().unwrap(),
-//    delC_delB_list.try_into().unwrap(),
-//)
-//for epoch in 0..5 {
-//    println!("starting epoch: {epoch}");
-//    for (images_chunk, classifications) in images
-//        .chunks(minibatch_size)
-//        .zip(classification.chunks(minibatch_size))
-//    {
-//        assert_eq!(images_chunk.len(), classifications.len());
-//        // make y_hat which is a matrix like this with height 10
-//        // [0.0, 0.0, 1.0, ...], [1.0, 0.0, ...]
-//        let mut y_vec = Vec::with_capacity(classifications.len() * 10);
-//        for x in classifications {
-//            let x = *x;
-//            for i in 0..10 {
-//                if i == x {
-//                    y_vec.push(not_nan(1.0));
-//                } else {
-//                    y_vec.push(not_nan(0.0));
-//                }
-//            }
-//        }
-//        let len = y_vec.len();
-//        let y = Matrix {
-//            data: y_vec.into(),
-//            height: len / 10,
-//        }
-//        .transpose();
-//        let height = images_chunk.len();
-//        let vec: Vec<_> = images_chunk.iter().flatten().map(|x| *x).collect();
-//        let mat = Matrix {
-//            data: vec.into(),
-//            height,
-//        }
-//        .transpose();
-//        network.feed_forward(&mat, activation);
-//        let (a, z) = network.feed_forward_results();
-
-//        let delta = network.back_prop(a.last().unwrap(), z, y, del_activation, del_cost);
-//        network.gradient_descent(
-//            not_nan(0.4),
-//            delta,
-//            //a,
-//            not_nan(50.0),
-//            training_set_size.into(),
-//        );
-//    }
-//}
