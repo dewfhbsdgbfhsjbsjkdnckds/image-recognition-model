@@ -3,14 +3,27 @@
 #![allow(unused_imports, unused_mut, unused_parens)]
 #![feature(generic_const_exprs)]
 #![feature(read_le)]
-#![feature(vec_from_fn)]
+//#![feature(vec_from_fn)]
 #![allow(incomplete_features)]
 #![feature(unboxed_closures)]
 
 // TODO make threadpool
 
 use std::{
-    any::TypeId, array::{self, TryFromSliceError}, borrow::Borrow, convert::identity, error::Error, fmt::{Debug, Display}, fs::File, io::{Cursor, Read}, mem::{self, MaybeUninit, swap}, ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}, ptr::NonNull, slice, sync::{Mutex, atomic::Ordering}, thread, time,
+    any::TypeId,
+    array::{self, TryFromSliceError},
+    borrow::Borrow,
+    convert::identity,
+    error::Error,
+    fmt::{Debug, Display},
+    fs::File,
+    io::{Cursor, Read},
+    mem::{self, MaybeUninit, swap},
+    ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+    ptr::NonNull,
+    slice,
+    sync::{Mutex, atomic::Ordering},
+    thread, time,
 };
 
 // might be useful? idk lol
@@ -127,28 +140,6 @@ type MulOut<T, U> = <T as Mul<U>>::Output;
 //    }
 //}
 
-//trait Zip<const N: usize, T, U> {
-//    fn zip(self, b: [U; N]) -> [(T, U); N];
-//}
-//impl<const N: usize, T, U> Zip<N, T, U> for [T; N] {
-//    fn zip(self, b: [U; N]) -> [(T, U); N] {
-//        let mut b = b.into_iter();
-//        self.map(|v| (v, b.next().unwrap()))
-//    }
-//}
-
-//impl<const N: usize, T, U> Add<VecN<N, U>> for VecN<N, T>
-//where
-//    T: Add<U>,
-//{
-//    type Output = VecN<N, <T as Add<U>>::Output>;
-//    fn add(self, rhs: VecN<N, U>) -> Self::Output {
-//        VecN {
-//            data: self.data.zip(rhs.data).map(|(x, y)| x + y),
-//        }
-//    }
-//}
-
 struct MnistData {
     sizes: Vec<i32>,
     data: Vec<u8>,
@@ -200,19 +191,19 @@ where
 //struct CachedExp {
 //}
 
-impl<T: FloatCore> Deref for Nan<T> {
-    type Target = NotNan<T>;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-fn not_nan<T: FloatCore>(x: T) -> Nan<T> {
-    Nan {
-        inner: NotNan::new(x).unwrap(),
-    }
-}
-type ScalarType = f32;
-type NonNanType = Nan<ScalarType>;
+//impl<T: FloatCore> Deref for Nan<T> {
+//    type Target = NotNan<T>;
+//    fn deref(&self) -> &Self::Target {
+//        &self.inner
+//    }
+//}
+//fn not_nan<T: FloatCore>(x: T) -> Nan<T> {
+//    Nan {
+//        inner: NotNan::new(x).unwrap(),
+//    }
+//}
+type Inner = f32;
+type ScalarType = Alg<Inner>;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = time::Instant::now();
     let mut file = File::open("/home/gfjnf/programming/machine_learning/train-labels.idx1-ubyte")?;
@@ -222,41 +213,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?)?;
     let image_shape = (images_data.sizes[1] * images_data.sizes[2]) as usize;
 
-    let images = meow(images_data, |x| {
-        not_nan(Into::<ScalarType>::into(x) / 255.0)
-    });
+    let images = meow(images_data, |x| Alg(Into::<Inner>::into(x) / 255.0));
     let training_set_size = images.len();
     let classification = label_data.data;
-    let classification: Box<[NonNanType]> = {
+    let classification: Box<[ScalarType]> = {
         let mut out = Vec::new();
         for x in classification {
             for i in 0..10 {
                 if i == x {
-                    out.push(not_nan(1.0));
+                    out.push(Alg(1.0));
                 } else {
-                    out.push(not_nan(0.0));
+                    out.push(Alg(0.0));
                 }
             }
         }
         out.into()
     };
 
-    let one = not_nan(1.0);
-    //let zero = not_nan(0.0);
+    let one = <ScalarType as Scalar>::ONE;
     let distribution = rand_distr::Normal::new(0.0, 1.0)?;
     let rng = &mut rand::rng();
     let rng2 = &mut rand::rng();
     let mut network = Network::new(
         [image_shape, 100, 10],
-        || not_nan(distribution.sample(rng)),
+        || Alg(distribution.sample(rng)),
         |connections| {
-            let distribution = Normal::new(0.0, 1.0 / (connections as ScalarType).sqrt()).unwrap();
-            not_nan(distribution.sample(rng2))
+            let distribution = Normal::new(0.0, 1.0 / (connections as Inner).sqrt()).unwrap();
+            Alg(distribution.sample(rng2))
         },
     );
     let minibatch_size = 40;
     // prepare minibatch
-    let activation = |x: NonNanType| one / (one + (-x).exp());
+    let activation = |x: ScalarType| one / (one + (-x).exp());
     let del_activation = |x| activation(x) * (one - activation(x));
     let del_cost = |_, a: Matrix<_>, y| a.sub_self(y);
 
@@ -266,9 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test_labels = MnistData::new(&mut File::open(
         "/home/gfjnf/programming/machine_learning/t10k-labels.idx1-ubyte",
     )?)?;
-    let x = meow(test_images_data, |x| {
-        not_nan(Into::<ScalarType>::into(x) / 255.0)
-    });
+    let x = meow(test_images_data, |x| Alg(Into::<Inner>::into(x) / 255.0));
     let height = x.len() / image_shape;
     let test_images = Matrix {
         data: x.into(),
@@ -278,7 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut previous_correct_count = 0;
     let mut no_improvement_in_counter = 0;
-    let mut learning_rate = not_nan(0.25);
+    let mut learning_rate = Alg(0.25);
     let initial_learning_rate = learning_rate;
     for epoch in 0..1 {
         println!("starting epoch {epoch}");
@@ -291,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             del_cost,
             del_activation,
             learning_rate,
-            not_nan(200.0),
+            Alg(200.0),
             training_set_size.into(),
         );
         let test_matrix = BorrowedMat {
@@ -313,11 +299,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             no_improvement_in_counter = 0;
         }
         if no_improvement_in_counter >= 1 {
-            learning_rate = learning_rate / not_nan(10.0);
+            learning_rate = learning_rate / Alg(10.0);
         }
-        if learning_rate < initial_learning_rate / not_nan(20000.0)
-            || no_improvement_in_counter == 10
-        {
+        if learning_rate < initial_learning_rate / Alg(20000.0) || no_improvement_in_counter == 10 {
             break;
         }
         previous_correct_count = correct_count;
@@ -349,6 +333,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let correct_ratio = correct_count as f64 / height as f64;
+            println!("correct percent: {}", correct_ratio * 100.0)
         }
         //println!("correct percentage: {}%", correct_ratio * 100.0);
         //println!("correct count: {}", correct_count);
@@ -360,14 +345,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-impl Scalar for NotNan<f64> {
-    const ONE: Self = const { unsafe { NotNan::new_unchecked(1.0) } };
-    const ZERO: Self = const { unsafe { NotNan::new_unchecked(0.0) } };
-}
-impl Scalar for NotNan<f32> {
-    const ONE: Self = const { unsafe { NotNan::new_unchecked(1.0) } };
-    const ZERO: Self = const { unsafe { NotNan::new_unchecked(0.0) } };
-}
+//impl Scalar for NotNan<f64> {
+//    const ONE: Self = const { unsafe { NotNan::new_unchecked(1.0) } };
+//    const ZERO: Self = const { unsafe { NotNan::new_unchecked(0.0) } };
+//}
+//impl Scalar for NotNan<f32> {
+//    const ONE: Self = const { unsafe { NotNan::new_unchecked(1.0) } };
+//    const ZERO: Self = const { unsafe { NotNan::new_unchecked(0.0) } };
+//}
 
 impl<T> Matrix<T> {
     pub fn from_fn<F>(height: usize, width: usize, mut f: F) -> Self
@@ -484,6 +469,53 @@ where
         (layers_a.as_array().unwrap(), layers_z.as_array().unwrap())
     }
     //#[allow(non_snake_case)]
+    pub fn back_prop_vectorised(
+        &self,
+        y_hat: impl AsMat<T>,
+        z: &[Matrix<T>; LAYER_COUNT - 1],
+        a: &[Matrix<T>; LAYER_COUNT - 1], // exptected results
+        del_activation_fn: impl Fn(T) -> T,
+        del_cost: impl Fn(Matrix<T>, Matrix<T>, Matrix<T>) -> Matrix<T>,
+        m: T,
+    ) -> Vec<Matrix<T>>
+    where
+        T: Sub<Output = T>,
+        T: Add<Output = T>,
+        T: Scalar,
+        T: Mul<T, Output = T>,
+    {
+        let mut delta_mat = Vec::with_capacity(LAYER_COUNT - 1);
+        let mut weights = Vec::with_capacity(LAYER_COUNT - 1);
+        //let mut weight_mat = Vec::with_capacity(LAYER_COUNT - 1);
+        //let last_z = z.last().unwrap().clone();
+        let y = a.last().unwrap().clone_to_matrix();
+        let y_hat = y_hat.clone_to_matrix();
+        let y_height = y.height();
+        let y_width = y.width();
+        let cost_gradient = matrix_map_a_b_override_a(y.data, y_hat.data, y_height, y_width, |y, y_hat| -y_hat / y);
+        let cost_gradient = Matrix {
+            data: cost_gradient,
+            height: y_height
+        };
+        let mut range = (0..LAYER_COUNT - 1).rev();
+        let successors = core::iter::successors(range.next().map(|x| (x, cost_gradient)), |del_c_del_a| {
+            let i = range.next()?;
+            let z = z[i + 1].clone();
+            let del_c_del_z = del_c_del_a.1.clone().hadamard_self(z.map(&del_activation_fn));
+            delta_mat.push(del_c_del_z.clone());
+            let mut w = self.weights[i].as_mat();
+            w.transpose();
+            let next = w * del_c_del_z.as_mat();
+            Some((i, next))
+        });
+        for (i, del_c_del_a) in successors {
+            let a = a[i].clone();
+            let dw = del_c_del_a * a.transpose();
+            weights.push(dw);
+        }
+        delta_mat
+    }
+
     pub fn back_prop(
         &self,
         y_hat: impl AsMat<T>,
@@ -577,6 +609,24 @@ where
             }
         }
     }
+    fn gradient_descent_vectorised(
+        &mut self,
+        learning_rate: T,
+        delta: Vec<Matrix<T>>,
+        lambda: T,
+        training_set_size: T,
+    ) where
+        T: Sub<Output = T>,
+        T: Mul<Output = T>,
+        T: From<u16>,
+        T: Scalar + Clone,
+    {
+        let a: &[Matrix<T>; LAYER_COUNT] = self.a_buffer.as_array().unwrap();
+        for layer in 0..LAYER_COUNT - 1 {
+            let delta = delta.get(layer).unwrap();
+            //let del_c_del_w = 
+        }
+    }
     fn run_epoch(
         &mut self,
         train_data: &[T],
@@ -594,6 +644,7 @@ where
     ) where
         T: Clone + Mul<Output = T> + Add<Output = T> + Scalar,
         T: From<u16>,
+        T: From<usize>,
         T: Debug,
     {
         let input_height = *self._layout_heights.first().unwrap();
@@ -615,13 +666,17 @@ where
             };
             self.feed_forward(train_mat, &activation_fn);
             let (a, z) = self.feed_forward_results();
-            let delta = self.back_prop(
-                a.last().unwrap(),
-                z,
-                train_y_mat,
-                &del_activation_fn,
-                &del_cost,
-            );
+            let delta = self.back_prop(a.last().unwrap(), z, train_y_mat, &del_activation_fn, &del_cost);
+            //let delta = self.back_prop_vectorised(a.last().unwrap(), z, train_y_mat, &del_activation_fn, &del_cost, minibatch_size.into());
+
+            //let delta = self.back_prop(
+            //    a.last().unwrap(),
+            //    z,
+            //    train_y_mat,
+            //    &del_activation_fn,
+            //    &del_cost,
+            //);
+            //self.gradient_descent_vectorised(learning_rate, delta, lambda, training_set_size);
             self.gradient_descent(learning_rate, delta, lambda, training_set_size);
         }
     }
@@ -673,6 +728,22 @@ where
         let p = rhs.width();
         //let x = matrix_mul(&self.data[..], &rhs.data[..], m, n, p);
         let x = matrix_mul(self.data, rhs.data, m, n, p);
+        Matrix { data: x, height: m }
+    }
+}
+impl<'a, 'b, T, U> Mul<BorrowedMat<'b, U>> for BorrowedMat<'a, T>
+where
+    T: Mul<U> + Sync,
+    T: Clone,
+    U: Clone + Sync,
+    <T as Mul<U>>::Output: Add<Output = <T as Mul<U>>::Output> + Send,
+{
+    type Output = Matrix<MulOut<T, U>>;
+    fn mul(self, rhs: BorrowedMat<'b, U>) -> Self::Output {
+        let m = self.height();
+        let n = rhs.height();
+        let p = rhs.width();
+        let x = matrix_mul(self, rhs, m, n, p);
         Matrix { data: x, height: m }
     }
 }
@@ -976,13 +1047,15 @@ impl<T> Matrix<T> {
     where
         T: Mul<Output = T> + Clone,
     {
-        assert_eq!(self.width(), 1, "hadamard only works on vectors");
-        assert_eq!(rhs.width(), 1, "hadamard only works on vectors");
-        assert_eq!(
-            self.height(),
-            rhs.height(),
-            "both vectors must have the same size for hadamard"
-        );
+        //assert_eq!(self.width(), 1, "hadamard only works on vectors");
+        //assert_eq!(rhs.width(), 1, "hadamard only works on vectors");
+        //assert_eq!(self.width(), rhs.width())
+        //assert_eq!(
+        //    self.height(),
+        //    rhs.height(),
+        //    "both vectors must have the same size for hadamard"
+        //);
+        assert_eq!(self.data.len(), rhs.data.len());
         let height = self.height();
         let width = self.width();
         Matrix {
@@ -1198,20 +1271,20 @@ where
     lhs
 }
 
-#[derive(PartialEq, PartialOrd, Clone, Copy)]
-#[repr(transparent)]
-struct Nan<T: FloatCore> {
-    inner: NotNan<T>,
-}
+//#[derive(PartialEq, PartialOrd, Clone, Copy)]
+//#[repr(transparent)]
+//struct Nan<T: FloatCore> {
+//    inner: NotNan<T>,
+//}
 
-impl<T> Debug for Nan<T>
-where
-    T: Debug + Clone + FloatCore,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.inner.clone().into_inner())
-    }
-}
+//impl<T> Debug for Nan<T>
+//where
+//    T: Debug + Clone + FloatCore,
+//{
+//    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//        write!(f, "{:?}", self.inner.clone().into_inner())
+//    }
+//}
 
 #[derive(Debug, Clone)]
 pub struct Matrix<T> {
@@ -1225,6 +1298,11 @@ pub struct BorrowedMat<'a, T> {
     data: &'a [T],
     height: usize,
     transposed: bool,
+}
+impl<'a, T> BorrowedMat<'a, T> {
+    fn transpose(&mut self) {
+        self.transposed = !self.transposed
+    }
 }
 
 impl<T> AsMat<T> for &Matrix<T> {
@@ -1347,34 +1425,39 @@ where
     }
 }
 
-impl From<u16> for Nan<f32> {
-    fn from(value: u16) -> Self {
-        not_nan(Into::<f32>::into(value))
-    }
-}
-impl From<usize> for Nan<f32> {
-    fn from(value: usize) -> Self {
-        not_nan(value as f32)
-    }
-}
-impl From<Nan<f32>> for usize {
-    fn from(value: Nan<f32>) -> Self {
-        value.into_inner() as usize
-    }
-}
-
-impl Nan<f32> {
-    // may panic lol
-    fn exp(self) -> Self {
-        not_nan(self.into_inner().exp())
-    }
-    //fn sqrt(self) -> Self {
-    //    not_nan(self.into_inner().sqrt())
-    //}
-}
+//impl From<u16> for Nan<f32> {
+//    fn from(value: u16) -> Self {
+//        not_nan(Into::<f32>::into(value))
+//    }
+//}
+//impl From<usize> for Nan<f32> {
+//    fn from(value: usize) -> Self {
+//        not_nan(value as f32)
+//    }
+//}
+//impl From<Nan<f32>> for usize {
+//    fn from(value: Nan<f32>) -> Self {
+//        value.into_inner() as usize
+//    }
+//}
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 struct Alg<T>(T);
+impl Alg<f32> {
+    fn exp(self) -> Alg<f32> {
+        Alg(self.0.exp())
+    }
+}
+impl From<usize> for Alg<f32> {
+    fn from(value: usize) -> Self {
+        Alg(value as f32)
+    }
+}
+impl From<u16> for Alg<f32> {
+    fn from(value: u16) -> Self {
+        Alg(value as f32)
+    }
+}
 impl Add for Alg<f32> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
@@ -1410,50 +1493,50 @@ impl Scalar for Alg<f32> {
     const ZERO: Self = Alg(0.0);
 }
 
-impl Scalar for Nan<f32> {
-    const ONE: Self = Nan {
-        inner: unsafe { NotNan::new_unchecked(1.0) },
-    };
-    const ZERO: Self = Nan {
-        inner: unsafe { NotNan::new_unchecked(0.0) },
-    };
-}
+//impl Scalar for Nan<f32> {
+//    const ONE: Self = Nan {
+//        inner: unsafe { NotNan::new_unchecked(1.0) },
+//    };
+//    const ZERO: Self = Nan {
+//        inner: unsafe { NotNan::new_unchecked(0.0) },
+//    };
+//}
 
-impl<T: FloatCore> Mul for Nan<T> {
-    type Output = Nan<<T as Mul>::Output>;
-    fn mul(self, rhs: Self) -> Self::Output {
-        Nan {
-            inner: self.inner * rhs.inner,
-        }
-    }
-}
-impl<T: FloatCore> Add for Nan<T> {
-    type Output = Nan<<T as Add>::Output>;
-    fn add(self, rhs: Self) -> Self::Output {
-        Nan {
-            inner: self.inner + rhs.inner,
-        }
-    }
-}
-impl<T: FloatCore> Sub for Nan<T> {
-    type Output = Nan<<T as Sub>::Output>;
-    fn sub(self, rhs: Self) -> Self::Output {
-        Nan {
-            inner: self.inner - rhs.inner,
-        }
-    }
-}
-impl<T: FloatCore> Div for Nan<T> {
-    type Output = Nan<<T as Div>::Output>;
-    fn div(self, rhs: Self) -> Self::Output {
-        Nan {
-            inner: self.inner / rhs.inner,
-        }
-    }
-}
-impl<T: FloatCore> Neg for Nan<T> {
-    type Output = Nan<<T as Neg>::Output>;
-    fn neg(self) -> Self::Output {
-        Nan { inner: -self.inner }
-    }
-}
+//impl<T: FloatCore> Mul for Nan<T> {
+//    type Output = Nan<<T as Mul>::Output>;
+//    fn mul(self, rhs: Self) -> Self::Output {
+//        Nan {
+//            inner: self.inner * rhs.inner,
+//        }
+//    }
+//}
+//impl<T: FloatCore> Add for Nan<T> {
+//    type Output = Nan<<T as Add>::Output>;
+//    fn add(self, rhs: Self) -> Self::Output {
+//        Nan {
+//            inner: self.inner + rhs.inner,
+//        }
+//    }
+//}
+//impl<T: FloatCore> Sub for Nan<T> {
+//    type Output = Nan<<T as Sub>::Output>;
+//    fn sub(self, rhs: Self) -> Self::Output {
+//        Nan {
+//            inner: self.inner - rhs.inner,
+//        }
+//    }
+//}
+//impl<T: FloatCore> Div for Nan<T> {
+//    type Output = Nan<<T as Div>::Output>;
+//    fn div(self, rhs: Self) -> Self::Output {
+//        Nan {
+//            inner: self.inner / rhs.inner,
+//        }
+//    }
+//}
+//impl<T: FloatCore> Neg for Nan<T> {
+//    type Output = Nan<<T as Neg>::Output>;
+//    fn neg(self) -> Self::Output {
+//        Nan { inner: -self.inner }
+//    }
+//}
