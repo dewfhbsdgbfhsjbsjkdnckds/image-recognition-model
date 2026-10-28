@@ -1,7 +1,12 @@
 //#![allow(unused)]
 //#![allow(unused_imports, dead_code, unused_mut, unused_parens)]
+#![allow(dead_code)]
 #![allow(unused_imports, unused_mut, unused_parens)]
-#![feature(generic_const_exprs)]
+// generic const
+#![feature(min_generic_const_args)]
+#![feature(generic_const_args)]
+#![feature(macroless_generic_const_args)]
+#![feature(generic_const_items)]
 #![feature(read_le)]
 //#![feature(vec_from_fn)]
 #![allow(incomplete_features)]
@@ -264,10 +269,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut previous_correct_count = 0;
     let mut no_improvement_in_counter = 0;
-    let mut learning_rate = Alg(0.25);
+    let mut learning_rate = Alg(0.35);
     let initial_learning_rate = learning_rate;
-    for epoch in 0..1 {
+    for epoch in 0..30 {
         println!("starting epoch {epoch}");
+        println!("learning rate: {}", learning_rate);
         // classification and images seem to be okay
         network.run_epoch(
             &images,
@@ -277,7 +283,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             del_cost,
             del_activation,
             learning_rate,
-            Alg(200.0),
+            Alg(250.0),
             training_set_size.into(),
         );
         let test_matrix = BorrowedMat {
@@ -285,6 +291,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: test_labels.data.len(),
             transposed: false,
         };
+        // this should probably be evaluated based on cost,
+        // or instead tested on the training batch,
+        // it feels cheatey using the training batch during testing
         let correct_count = network.test(&test_images, test_matrix, activation);
         let correct_ratio = correct_count as f64 / height as f64;
         println!(
@@ -292,7 +301,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             correct_count,
             correct_ratio * 100.0
         );
-        println!("learning rate: {:?}", learning_rate);
+        println!();
         if previous_correct_count >= correct_count {
             no_improvement_in_counter += 1;
         } else {
@@ -301,7 +310,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if no_improvement_in_counter >= 1 {
             learning_rate = learning_rate / Alg(10.0);
         }
-        if learning_rate < initial_learning_rate / Alg(20000.0) || no_improvement_in_counter == 10 {
+        if learning_rate < initial_learning_rate / Alg(200000.0) || no_improvement_in_counter == 8 {
             break;
         }
         previous_correct_count = correct_count;
@@ -376,32 +385,27 @@ impl<T> Matrix<T> {
 // the size is known when creating the model, and does not change
 // size of biases = sum(heights)
 // size of weights = sum i = 0 to layer_count (heights[i] * heights[i + 1])
+//type const Sub<const A: usize, const B: usize>: usize = const {A - 1};
+const SUB<const T: usize, const U: usize>: usize = const { T - U };
 #[derive(Debug)]
 struct Network<const LAYER_COUNT: usize, T>
-where
-    [(); LAYER_COUNT - 1]:,
+//where
+//[(); LAYER_COUNT - 1]:,
 {
     _layout_heights: [usize; LAYER_COUNT],
-    biases: [Box<[T]>; LAYER_COUNT - 1],
-    weights: [Matrix<T>; LAYER_COUNT - 1],
+    biases: [Box<[T]>; SUB::<LAYER_COUNT, 1>],
+    weights: [Matrix<T>; SUB::<LAYER_COUNT, 1>],
     a_buffer: Vec<Matrix<T>>,
     z_buffer: Vec<Matrix<T>>,
 }
 
 // layer count includes input layer? idk lol
-impl<const LAYER_COUNT: usize, T> Network<LAYER_COUNT, T>
-where
-    [(); LAYER_COUNT - 1]:,
-{
-    pub fn new<BFn, WFn>(
+impl<const LAYER_COUNT: usize, T> Network<LAYER_COUNT, T> {
+    pub fn new(
         heights: [usize; LAYER_COUNT],
-        mut biases_fn: BFn,
-        mut weights_fn: WFn,
-    ) -> Self
-    where
-        BFn: FnMut() -> T,
-        WFn: FnMut(usize) -> T,
-    {
+        mut biases_fn: impl FnMut() -> T,
+        mut weights_fn: impl FnMut(usize) -> T,
+    ) -> Self {
         let biases = array::from_fn(|i| {
             let height = heights[i + 1];
             let mut out = Vec::new();
@@ -427,11 +431,10 @@ where
         }
     }
     // TODO verify that the logic here is correct
-    pub fn feed_forward<'a, F>(&mut self, input: impl AsMat<T>, activation_fn: F)
+    pub fn feed_forward<'a>(&mut self, input: impl AsMat<T>, activation_fn: impl Fn(T) -> T)
     /*-> (&[Matrix<T>; LAYER_COUNT], &[Matrix<T>; LAYER_COUNT - 1])*/
     /* a, z */
     where
-        F: Fn(T) -> T,
         T: Mul<Output = T> + Add<Output = T> + Clone,
         T: 'a,
         T: Send + Sync,
@@ -463,7 +466,10 @@ where
     }
     pub fn feed_forward_results(
         &self,
-    ) -> (&[Matrix<T>; LAYER_COUNT], &[Matrix<T>; LAYER_COUNT - 1]) {
+    ) -> (
+        &[Matrix<T>; LAYER_COUNT],
+        &[Matrix<T>; SUB::<LAYER_COUNT, 1>],
+    ) {
         let layers_a = &self.a_buffer;
         let layers_z = &self.z_buffer;
         (layers_a.as_array().unwrap(), layers_z.as_array().unwrap())
@@ -472,11 +478,11 @@ where
     pub fn back_prop_vectorised(
         &self,
         y_hat: impl AsMat<T>,
-        z: &[Matrix<T>; LAYER_COUNT - 1],
-        a: &[Matrix<T>; LAYER_COUNT - 1], // exptected results
+        z: &[Matrix<T>; SUB::<LAYER_COUNT, 1>],
+        a: &[Matrix<T>; SUB::<LAYER_COUNT, 1>], // exptected results
         del_activation_fn: impl Fn(T) -> T,
-        del_cost: impl Fn(Matrix<T>, Matrix<T>, Matrix<T>) -> Matrix<T>,
-        m: T,
+        _del_cost: impl Fn(Matrix<T>, Matrix<T>, Matrix<T>) -> Matrix<T>,
+        _m: T,
     ) -> Vec<Matrix<T>>
     where
         T: Sub<Output = T>,
@@ -492,22 +498,27 @@ where
         let y_hat = y_hat.clone_to_matrix();
         let y_height = y.height();
         let y_width = y.width();
-        let cost_gradient = matrix_map_a_b_override_a(y.data, y_hat.data, y_height, y_width, |y, y_hat| -y_hat / y);
+        let cost_gradient =
+            matrix_map_a_b_override_a(y.data, y_hat.data, y_height, y_width, |y, y_hat| -y_hat / y);
         let cost_gradient = Matrix {
             data: cost_gradient,
-            height: y_height
+            height: y_height,
         };
         let mut range = (0..LAYER_COUNT - 1).rev();
-        let successors = core::iter::successors(range.next().map(|x| (x, cost_gradient)), |del_c_del_a| {
-            let i = range.next()?;
-            let z = z[i + 1].clone();
-            let del_c_del_z = del_c_del_a.1.clone().hadamard_self(z.map(&del_activation_fn));
-            delta_mat.push(del_c_del_z.clone());
-            let mut w = self.weights[i].as_mat();
-            w.transpose();
-            let next = w * del_c_del_z.as_mat();
-            Some((i, next))
-        });
+        let successors =
+            core::iter::successors(range.next().map(|x| (x, cost_gradient)), |del_c_del_a| {
+                let i = range.next()?;
+                let z = z[i + 1].clone();
+                let del_c_del_z = del_c_del_a
+                    .1
+                    .clone()
+                    .hadamard_self(z.map(&del_activation_fn));
+                delta_mat.push(del_c_del_z.clone());
+                let mut w = self.weights[i].as_mat();
+                w.transpose();
+                let next = w * del_c_del_z.as_mat();
+                Some((i, next))
+            });
         for (i, del_c_del_a) in successors {
             let a = a[i].clone();
             let dw = del_c_del_a * a.transpose();
@@ -519,7 +530,7 @@ where
     pub fn back_prop(
         &self,
         y_hat: impl AsMat<T>,
-        z: &[Matrix<T>; LAYER_COUNT - 1],
+        z: &[Matrix<T>; SUB::<LAYER_COUNT, 1>],
         y: impl AsMat<T>,
         del_activation_fn: impl Fn(T) -> T,
         del_cost: impl Fn(Matrix<T>, Matrix<T>, Matrix<T>) -> Matrix<T>,
@@ -611,20 +622,20 @@ where
     }
     fn gradient_descent_vectorised(
         &mut self,
-        learning_rate: T,
+        _learning_rate: T,
         delta: Vec<Matrix<T>>,
-        lambda: T,
-        training_set_size: T,
+        _lambda: T,
+        _training_set_size: T,
     ) where
         T: Sub<Output = T>,
         T: Mul<Output = T>,
         T: From<u16>,
         T: Scalar + Clone,
     {
-        let a: &[Matrix<T>; LAYER_COUNT] = self.a_buffer.as_array().unwrap();
+        let _a: &[Matrix<T>; LAYER_COUNT] = self.a_buffer.as_array().unwrap();
         for layer in 0..LAYER_COUNT - 1 {
-            let delta = delta.get(layer).unwrap();
-            //let del_c_del_w = 
+            let _delta = delta.get(layer).unwrap();
+            //let del_c_del_w =
         }
     }
     fn run_epoch(
@@ -666,7 +677,13 @@ where
             };
             self.feed_forward(train_mat, &activation_fn);
             let (a, z) = self.feed_forward_results();
-            let delta = self.back_prop(a.last().unwrap(), z, train_y_mat, &del_activation_fn, &del_cost);
+            let delta = self.back_prop(
+                a.last().unwrap(),
+                z,
+                train_y_mat,
+                &del_activation_fn,
+                &del_cost,
+            );
             //let delta = self.back_prop_vectorised(a.last().unwrap(), z, train_y_mat, &del_activation_fn, &del_cost, minibatch_size.into());
 
             //let delta = self.back_prop(
@@ -1106,41 +1123,41 @@ where
     matrix_mul_singlethreaded(lhs, rhs, m, n, p)
     //}
 }
-//fn matrix_mul_parallel<T, U>(
-//    lhs: impl WidthGetCloned<T> + Sync,
-//    rhs: impl WidthGetCloned<U> + Sync,
-//    m: usize,
-//    n: usize,
-//    p: usize,
-//) -> Box<[MulOut<T, U>]>
-//where
-//    T: Mul<U>,
-//    T: Clone,
-//    U: Clone,
-//    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
-//{
-//    let mut out = Vec::from_fn(m * p, |_| MaybeUninit::uninit());
-//    let mut chunks = out.chunks_mut(p);
-//    //println!("before threadpool scope");
-//    THREADPOOL.scope(|x| {
-//        let lhs = &lhs;
-//        let rhs = &rhs;
-//        for i in 0..m {
-//            let chunk = chunks.next().unwrap();
-//            x.spawn(move || {
-//                for j in 0..p {
-//                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
-//                    for k in 1..n {
-//                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
-//                    }
-//                    chunk[j] = MaybeUninit::new(sum);
-//                }
-//            });
-//        }
-//    });
-//    let out: Box<[_]> = out.into();
-//    unsafe { out.assume_init() }
-//}
+fn matrix_mul_parallel<T, U>(
+    lhs: impl WidthGetCloned<T> + Sync,
+    rhs: impl WidthGetCloned<U> + Sync,
+    m: usize,
+    n: usize,
+    p: usize,
+) -> Box<[MulOut<T, U>]>
+where
+    T: Mul<U>,
+    T: Clone,
+    U: Clone,
+    MulOut<T, U>: Add<Output = <T as Mul<U>>::Output> + Send,
+{
+    let mut out = Vec::from_fn(m * p, |_| MaybeUninit::uninit());
+    let mut chunks = out.chunks_mut(p);
+    //println!("before threadpool scope");
+    thread::scope(|x| {
+        let lhs = &lhs;
+        let rhs = &rhs;
+        for i in 0..m {
+            let chunk = chunks.next().unwrap();
+            x.spawn(move || {
+                for j in 0..p {
+                    let mut sum = lhs.width_get_cloned(i, n, 0) * rhs.width_get_cloned(0, n, j);
+                    for k in 1..n {
+                        sum = sum + lhs.width_get_cloned(i, n, k) * rhs.width_get_cloned(k, p, j);
+                    }
+                    chunk[j] = MaybeUninit::new(sum);
+                }
+            });
+        }
+    });
+    let out: Box<[_]> = out.into();
+    unsafe { out.assume_init() }
+}
 fn matrix_mul_singlethreaded<T, U>(
     lhs: impl WidthGetCloned<T>,
     rhs: impl WidthGetCloned<U>,
@@ -1446,6 +1463,14 @@ struct Alg<T>(T);
 impl Alg<f32> {
     fn exp(self) -> Alg<f32> {
         Alg(self.0.exp())
+    }
+}
+impl<T> Display for Alg<T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 impl From<usize> for Alg<f32> {
